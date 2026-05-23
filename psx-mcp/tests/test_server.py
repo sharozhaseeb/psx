@@ -181,3 +181,38 @@ def test_refresh_and_get_announcements(deps_with_client, fixtures_dir):
         deps_with_client._cache, deps_with_client._client))
     anns = deps_with_client._get_announcements_impl(deps_with_client._cache, None, since_days=365)
     assert isinstance(anns, list)
+
+
+def test_watchlist_lifecycle(deps):
+    e = deps._add_to_watchlist_impl(deps._store, "OGDC", "energy")
+    assert e.symbol == "OGDC"
+    assert any(w.symbol == "OGDC" for w in deps._list_watchlist_impl(deps._store))
+    assert deps._remove_from_watchlist_impl(deps._store, "OGDC") is True
+
+
+def test_alert_rule_lifecycle(deps):
+    rule = deps._set_alert_rule_impl(deps._store, symbol="LUCK", type="price",
+                                     condition={"op": ">", "value": 700})
+    assert rule.id
+    rules = deps._list_alert_rules_impl(deps._store, symbol="LUCK")
+    assert len(rules) == 1
+    assert deps._remove_alert_rule_impl(deps._store, rule.id) is True
+
+
+def test_check_alerts_returns_hits(deps):
+    deps._set_alert_rule_impl(deps._store, symbol="LUCK", type="price",
+                              condition={"op": ">", "value": 700})
+    hits = deps._check_alerts_impl(deps._cache, deps._store, symbols=None)
+    assert any(h.symbol == "LUCK" for h in hits)
+
+
+def test_scan_volume_spikes(deps):
+    spikes = deps._scan_volume_spikes_impl(deps._cache, symbols=["LUCK"],
+                                            multiplier=0.001, lookback_days=10)
+    assert isinstance(spikes, list)
+
+
+def test_compare_symbols(deps):
+    out = deps._compare_symbols_impl(deps._cache, symbols=["LUCK"], metrics=["price", "rsi14"])
+    assert len(out.rows) == 1
+    assert out.rows[0].symbol == "LUCK"

@@ -375,6 +375,137 @@ async def get_news(symbol: Optional[str] = None, since_days: int = 3) -> list[Ne
     return _get_news_impl(_cache, symbol, since_days)
 
 
+# ---- watchlist & alerts ----
+
+def _list_watchlist_impl(store: WatchlistStore) -> list[WatchEntry]:
+    return store.list_watch()
+
+
+def _add_to_watchlist_impl(store: WatchlistStore, symbol: str,
+                            notes: Optional[str] = None) -> WatchEntry:
+    return store.add_watch(symbol, notes)
+
+
+def _remove_from_watchlist_impl(store: WatchlistStore, symbol: str) -> bool:
+    return store.remove_watch(symbol)
+
+
+def _set_alert_rule_impl(store: WatchlistStore, *, symbol: str, type: str,
+                          condition: dict) -> AlertRule:
+    cond = AlertCondition(**condition)
+    return store.set_alert_rule(symbol=symbol, type=type, condition=cond)
+
+
+def _list_alert_rules_impl(store: WatchlistStore, symbol: Optional[str] = None) -> list[AlertRule]:
+    return store.list_alert_rules(symbol)
+
+
+def _remove_alert_rule_impl(store: WatchlistStore, rule_id: str) -> bool:
+    return store.remove_alert_rule(rule_id)
+
+
+def _check_alerts_impl(cache: Cache, store: WatchlistStore,
+                        symbols: Optional[list[str]] = None) -> list[AlertHit]:
+    return run_alerts(cache, store, symbols=symbols)
+
+
+def _scan_volume_spikes_impl(cache: Cache, symbols: Optional[list[str]],
+                              multiplier: float, lookback_days: int) -> list[VolumeSpike]:
+    if not symbols:
+        symbols = [s["symbol"] for s in cache.all_symbols()]
+    out: list[VolumeSpike] = []
+    for sym in symbols:
+        df = bars_df(cache, sym, lookback_days)
+        if len(df) < 5:
+            continue
+        today_vol = float(df["volume"].iloc[-1])
+        avg_vol = float(df["volume"].iloc[:-1].mean()) if len(df) > 1 else 0.0
+        mult = today_vol / avg_vol if avg_vol else 0.0
+        if mult >= multiplier:
+            out.append(VolumeSpike(symbol=sym, today_volume=int(today_vol),
+                                    avg_volume=avg_vol, multiplier=mult))
+    out.sort(key=lambda v: v.multiplier, reverse=True)
+    return out
+
+
+def _compare_symbols_impl(cache: Cache, symbols: list[str], metrics: list[str]) -> ComparisonTable:
+    rows: list[ComparisonRow] = []
+    for sym in symbols:
+        m: dict = {}
+        q = cache.get_latest_quote(sym)
+        f = cache.get_fundamentals(sym)
+        df = bars_df(cache, sym, lookback_days=400)
+        for name in metrics:
+            if name == "price":
+                m[name] = q["price"] if q else None
+            elif name == "rsi14" and not df.empty and len(df) >= 14:
+                m[name] = float(rsi(df["close"], 14).iloc[-1])
+            elif name.startswith("sma") and not df.empty:
+                window = int(name[3:])
+                m[name] = float(sma(df["close"], window).iloc[-1]) if len(df) >= window else None
+            elif name in ("pe", "eps", "pb", "div_yield", "payout", "roe"):
+                m[name] = (f or {}).get(name)
+            else:
+                m[name] = None
+        rows.append(ComparisonRow(symbol=sym, metrics=m))
+    return ComparisonTable(metrics=metrics, rows=rows)
+
+
+@mcp.tool()
+async def list_watchlist() -> list[WatchEntry]:
+    return _list_watchlist_impl(_store)
+
+
+@mcp.tool()
+async def add_to_watchlist(symbol: str, notes: Optional[str] = None) -> WatchEntry:
+    return _add_to_watchlist_impl(_store, symbol, notes)
+
+
+@mcp.tool()
+async def remove_from_watchlist(symbol: str) -> bool:
+    return _remove_from_watchlist_impl(_store, symbol)
+
+
+@mcp.tool()
+async def set_alert_rule(symbol: str, type: str, condition: dict) -> AlertRule:
+    """Create or replace an alert rule.
+
+    type: 'price' | 'indicator' | 'volume' | 'announcement'
+    condition: {indicator?, op, value, lookback_days?}
+    """
+    return _set_alert_rule_impl(_store, symbol=symbol, type=type, condition=condition)
+
+
+@mcp.tool()
+async def list_alert_rules(symbol: Optional[str] = None) -> list[AlertRule]:
+    return _list_alert_rules_impl(_store, symbol)
+
+
+@mcp.tool()
+async def remove_alert_rule(rule_id: str) -> bool:
+    return _remove_alert_rule_impl(_store, rule_id)
+
+
+@mcp.tool()
+async def check_alerts(symbols: Optional[list[str]] = None) -> list[AlertHit]:
+    """Evaluate all (or selected) alert rules against latest cached data."""
+    return _check_alerts_impl(_cache, _store, symbols)
+
+
+@mcp.tool()
+async def scan_volume_spikes(symbols: Optional[list[str]] = None,
+                              multiplier: float = 2.0,
+                              lookback_days: int = 20) -> list[VolumeSpike]:
+    """Find symbols whose latest volume is >= multiplier * recent average."""
+    return _scan_volume_spikes_impl(_cache, symbols, multiplier, lookback_days)
+
+
+@mcp.tool()
+async def compare_symbols(symbols: list[str], metrics: list[str]) -> ComparisonTable:
+    """Side-by-side metric table. metrics: price | rsi14 | sma50 | sma200 | pe | eps | div_yield | …"""
+    return _compare_symbols_impl(_cache, symbols, metrics)
+
+
 if __name__ == "__main__":
     configure_logging()
     data_dir = Path("data")
