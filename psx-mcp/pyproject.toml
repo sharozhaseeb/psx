@@ -34,3 +34,4 @@ packages = ["src/psx_mcp"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-q"
+pythonpath = ["."]
