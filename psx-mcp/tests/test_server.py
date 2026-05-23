@@ -75,3 +75,41 @@ def test_compute_indicators_impl(deps):
     assert "rsi14" in out
     assert "sma10" in out
     assert isinstance(out["rsi14"], float)
+
+
+import asyncio
+import httpx
+import respx
+from psx_mcp.psx_client import PSXClient, BASE_DPS
+
+
+@pytest.fixture
+def deps_with_client(deps, tmp_path):
+    """Same as `deps` but with a real PSXClient (network mocked via respx in each test)."""
+    deps.set_dependencies(cache=deps._cache, store=deps._store, client=PSXClient())
+    return deps
+
+
+@respx.mock
+def test_refresh_market_impl_populates_cache(deps_with_client, fixtures_dir):
+    html = (fixtures_dir / "market_watch.html").read_text(encoding="utf-8")
+    respx.get(f"{BASE_DPS}/market-watch").mock(return_value=httpx.Response(200, text=html))
+    n = asyncio.run(deps_with_client._refresh_market_impl(deps_with_client._cache,
+                                                           deps_with_client._client))
+    assert n > 100
+
+
+@respx.mock
+def test_get_top_movers_after_refresh(deps_with_client, fixtures_dir):
+    html = (fixtures_dir / "market_watch.html").read_text(encoding="utf-8")
+    respx.get(f"{BASE_DPS}/market-watch").mock(return_value=httpx.Response(200, text=html))
+    asyncio.run(deps_with_client._refresh_market_impl(deps_with_client._cache,
+                                                       deps_with_client._client))
+    gainers = deps_with_client._get_top_movers_impl(deps_with_client._cache, kind="gainers", limit=5)
+    assert len(gainers) <= 5
+
+
+def test_market_summary_returns_stale_when_empty(deps):
+    s = deps._get_market_summary_impl(deps._cache)
+    assert s.timestamp
+    assert s.stale is True

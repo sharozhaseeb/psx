@@ -147,6 +147,78 @@ async def compute_indicators(symbol: str, indicators: list[str], lookback_days: 
     return _compute_indicators_impl(_cache, symbol, indicators, lookback_days)
 
 
+async def _refresh_market_impl(cache: Cache, client: Optional[PSXClient]) -> int:
+    if not client:
+        return 0
+    html = await client.fetch_market_watch()
+    rows = parse_market_watch(html)
+    now = datetime.now()
+    for r in rows:
+        cache.upsert_quote(
+            symbol=r["symbol"], ts=now, price=r["price"] or 0,
+            change=r["change"] or 0, volume=r["volume"] or 0,
+            day_high=r["day_high"] or 0, day_low=r["day_low"] or 0,
+            fetched_at=now,
+        )
+    log.info("market_refresh", count=len(rows))
+    return len(rows)
+
+
+def _get_market_summary_impl(cache: Cache) -> MarketSummary:
+    kse100_row = cache.get_latest_quote("KSE100")
+    return MarketSummary(
+        kse100=(kse100_row or {}).get("price") or 0.0,
+        kse100_change=(kse100_row or {}).get("change") or 0.0,
+        sectors=[],
+        timestamp=datetime.now(),
+        stale=kse100_row is None,
+        summary="KSE-100 snapshot — call refresh_market() first if stale.",
+    )
+
+
+def _get_top_movers_impl(cache: Cache, kind: str = "gainers", limit: int = 10) -> list[Mover]:
+    rows = cache.conn.execute(
+        """SELECT q.symbol, q.price, q.change, q.volume, s.name
+           FROM quotes q LEFT JOIN symbols s ON s.symbol=q.symbol
+           WHERE q.ts = (SELECT MAX(ts) FROM quotes q2 WHERE q2.symbol=q.symbol)
+           AND q.price > 0"""
+    ).fetchall()
+    movers = []
+    for r in rows:
+        d = dict(r)
+        prev_close = d["price"] - d["change"]
+        change_pct = (d["change"] / prev_close * 100) if prev_close > 0 else 0.0
+        movers.append(Mover(symbol=d["symbol"], name=d.get("name"),
+                            price=d["price"], change_pct=change_pct, volume=d["volume"]))
+    if kind == "gainers":
+        movers.sort(key=lambda m: m.change_pct, reverse=True)
+    elif kind == "losers":
+        movers.sort(key=lambda m: m.change_pct)
+    elif kind == "volume":
+        movers.sort(key=lambda m: m.volume, reverse=True)
+    else:
+        raise ValueError(f"unknown kind: {kind}")
+    return movers[:limit]
+
+
+@mcp.tool()
+async def refresh_market() -> int:
+    """Force a refresh of the market-watch snapshot. Returns quotes upserted."""
+    return await _refresh_market_impl(_cache, _client)
+
+
+@mcp.tool()
+async def get_market_summary() -> MarketSummary:
+    """Index levels + sector aggregates. Best-effort from cached snapshot."""
+    return _get_market_summary_impl(_cache)
+
+
+@mcp.tool()
+async def get_top_movers(kind: str = "gainers", limit: int = 10) -> list[Mover]:
+    """kind: 'gainers' | 'losers' | 'volume'."""
+    return _get_top_movers_impl(_cache, kind, limit)
+
+
 if __name__ == "__main__":
     configure_logging()
     data_dir = Path("data")
