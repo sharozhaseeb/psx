@@ -219,6 +219,162 @@ async def get_top_movers(kind: str = "gainers", limit: int = 10) -> list[Mover]:
     return _get_top_movers_impl(_cache, kind, limit)
 
 
+async def _get_company_info_impl(cache: Cache, client: Optional[PSXClient], symbol: str) -> CompanyInfo:
+    sym = symbol.upper()
+    cached = cache.get_symbol(sym)
+    age = cache.symbols_master_age_seconds()
+    if cached and age is not None and age < 7 * 86400 and cached.get("name"):
+        return CompanyInfo(
+            symbol=sym, name=cached["name"], sector=cached.get("sector"),
+            listed_shares=cached.get("listed_shares"),
+        )
+    if not client:
+        return CompanyInfo(symbol=sym, name=(cached or {}).get("name") or sym)
+    html = await client.fetch_profile(sym)
+    info = parse_profile(sym, html)
+    cache.upsert_symbol(sym, info.name, info.sector, info.listed_shares)
+    return info
+
+
+async def _get_fundamentals_impl(cache: Cache, client: Optional[PSXClient], symbol: str) -> Fundamentals:
+    sym = symbol.upper()
+    age = cache.fundamentals_age_seconds(sym)
+    if age is not None and age < 86400:
+        row = cache.get_fundamentals(sym)
+        return Fundamentals(
+            symbol=sym, eps=row["eps"], pe=row["pe"], pb=row["pb"],
+            div_yield=row["div_yield"], payout=row["payout"], roe=row["roe"],
+            refreshed_at=datetime.fromisoformat(row["refreshed_at"]),
+        )
+    if not client:
+        row = cache.get_fundamentals(sym)
+        if not row:
+            return Fundamentals(symbol=sym)
+        return Fundamentals(
+            symbol=sym, eps=row["eps"], pe=row["pe"], pb=row["pb"],
+            div_yield=row["div_yield"], payout=row["payout"], roe=row["roe"],
+        )
+    html = await client.fetch_financials(sym)
+    f = parse_financials(sym, html)
+    cache.upsert_fundamentals(symbol=sym, eps=f.eps, pe=f.pe, pb=f.pb,
+                              div_yield=f.div_yield, payout=f.payout, roe=f.roe)
+    return f
+
+
+async def _get_financials_impl(cache: Cache, client: Optional[PSXClient],
+                                symbol: str, period: str = "annual") -> list[FinancialStatement]:
+    if period not in ("annual", "quarterly"):
+        raise ValueError("period must be 'annual' or 'quarterly'")
+    if not client:
+        return []
+    html = await client.fetch_financials(symbol)
+    return parse_financial_statements(symbol, period, html)
+
+
+async def _refresh_history_impl(cache: Cache, client: Optional[PSXClient], symbol: str) -> int:
+    if not client:
+        return 0
+    payload = await client.fetch_historical(symbol)
+    bars = parse_historical(symbol, payload)
+    cache.upsert_bars(bars)
+    return len(bars)
+
+
+async def _refresh_announcements_impl(cache: Cache, client: Optional[PSXClient]) -> int:
+    if not client:
+        return 0
+    payload = await client.fetch_announcements()
+    items = parse_announcements(payload)
+    for a in items:
+        cache.upsert_announcement(a)
+    log.info("announcements_refresh", count=len(items))
+    return len(items)
+
+
+def _get_announcements_impl(cache: Cache, symbol: Optional[str], since_days: int) -> list[Announcement]:
+    since = datetime.now() - timedelta(days=since_days)
+    rows = cache.get_announcements(symbol=symbol, since=since)
+    return [Announcement(
+        id=r["id"], symbol=r.get("symbol"), posted_at=r["posted_at"],
+        title=r["title"], category=r.get("category"), url=r.get("url"), body=r.get("body"),
+    ) for r in rows]
+
+
+async def _refresh_news_impl(cache: Cache, client: Optional[PSXClient]) -> int:
+    if not client:
+        return 0
+    universe = {s["symbol"] for s in cache.all_symbols()}
+    total = 0
+    for source, url in FEEDS.items():
+        try:
+            xml = await client._get(url)
+        except Exception as e:
+            log.warning("news_fetch_failed", source=source, error=str(e))
+            continue
+        items = parse_rss(source, xml)
+        for it in items:
+            mentions = find_symbol_mentions(it.title, "", universe)
+            cache.upsert_news(id=it.id, source=it.source, posted_at=it.posted_at,
+                              title=it.title, url=it.url, symbols=mentions)
+            total += 1
+    return total
+
+
+def _get_news_impl(cache: Cache, symbol: Optional[str], since_days: int) -> list[NewsItem]:
+    since = datetime.now() - timedelta(days=since_days)
+    rows = cache.get_news(symbol=symbol, since=since)
+    return [NewsItem(id=r["id"], source=r["source"], posted_at=r["posted_at"],
+                     title=r["title"], url=r["url"], symbols=r["symbols"]) for r in rows]
+
+
+@mcp.tool()
+async def get_company_info(symbol: str) -> CompanyInfo:
+    """Profile, sector, listed shares. Fetches & caches on first call."""
+    return await _get_company_info_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def get_fundamentals(symbol: str) -> Fundamentals:
+    """EPS, P/E, P/B, dividend yield. Cached for 1 day."""
+    return await _get_fundamentals_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def get_financials(symbol: str, period: str = "annual") -> list[FinancialStatement]:
+    """Best-effort annual/quarterly financial statements from PSX filings."""
+    return await _get_financials_impl(_cache, _client, symbol, period)
+
+
+@mcp.tool()
+async def refresh_history(symbol: str) -> int:
+    """Pull daily bars for a symbol from PSX and append to cache."""
+    return await _refresh_history_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def refresh_announcements() -> int:
+    """Pull recent corporate announcements and cache them."""
+    return await _refresh_announcements_impl(_cache, _client)
+
+
+@mcp.tool()
+async def get_announcements(symbol: Optional[str] = None, since_days: int = 7) -> list[Announcement]:
+    """Cached corporate announcements; symbol=None returns all."""
+    return _get_announcements_impl(_cache, symbol, since_days)
+
+
+@mcp.tool()
+async def refresh_news() -> int:
+    """Pull all configured RSS feeds, tag symbol mentions, cache items."""
+    return await _refresh_news_impl(_cache, _client)
+
+
+@mcp.tool()
+async def get_news(symbol: Optional[str] = None, since_days: int = 3) -> list[NewsItem]:
+    """Cached news items; filter by symbol mention if provided."""
+    return _get_news_impl(_cache, symbol, since_days)
+
+
 if __name__ == "__main__":
     configure_logging()
     data_dir = Path("data")

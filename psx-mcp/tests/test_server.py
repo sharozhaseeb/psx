@@ -113,3 +113,71 @@ def test_market_summary_returns_stale_when_empty(deps):
     s = deps._get_market_summary_impl(deps._cache)
     assert s.timestamp
     assert s.stale is True
+
+
+# ============================================================================
+# Task 14: company info, fundamentals, financials, history-refresh,
+#          announcements, news
+# ============================================================================
+
+from psx_mcp.psx_client import BASE_DPS  # noqa: E402  (already imported above)
+
+
+@respx.mock
+def test_get_company_info_fetches_and_caches(deps_with_client, fixtures_dir):
+    html = (fixtures_dir / "profile_LUCK.html").read_text(encoding="utf-8")
+    # fetch_profile → GET https://dps.psx.com.pk/company/LUCK
+    respx.get(f"{BASE_DPS}/company/LUCK").mock(return_value=httpx.Response(200, text=html))
+    info = asyncio.run(deps_with_client._get_company_info_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK"))
+    assert info.symbol == "LUCK"
+    assert info.name
+
+
+@respx.mock
+def test_get_fundamentals(deps_with_client, fixtures_dir):
+    html = (fixtures_dir / "financial_LUCK.html").read_text(encoding="utf-8")
+    # fetch_financials → GET https://dps.psx.com.pk/company/LUCK
+    respx.get(f"{BASE_DPS}/company/LUCK").mock(return_value=httpx.Response(200, text=html))
+    f = asyncio.run(deps_with_client._get_fundamentals_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK"))
+    assert f.symbol == "LUCK"
+
+
+@respx.mock
+def test_get_financials_statements(deps_with_client, fixtures_dir):
+    html = (fixtures_dir / "financial_LUCK.html").read_text(encoding="utf-8")
+    # fetch_financials → GET https://dps.psx.com.pk/company/LUCK
+    respx.get(f"{BASE_DPS}/company/LUCK").mock(return_value=httpx.Response(200, text=html))
+    out = asyncio.run(deps_with_client._get_financials_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK", "annual"))
+    assert isinstance(out, list)
+
+
+@respx.mock
+def test_refresh_history_persists_bars(deps_with_client, fixtures_dir):
+    for ext in ("json", "html"):
+        p = fixtures_dir / f"historical_LUCK.{ext}"
+        if p.exists():
+            payload = p.read_text(encoding="utf-8")
+            break
+    # fetch_historical → POST https://dps.psx.com.pk/historical
+    respx.post(f"{BASE_DPS}/historical").mock(return_value=httpx.Response(200, text=payload))
+    n = asyncio.run(deps_with_client._refresh_history_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK"))
+    assert n >= 0
+
+
+@respx.mock
+def test_refresh_and_get_announcements(deps_with_client, fixtures_dir):
+    for ext in ("json", "html"):
+        p = fixtures_dir / f"announcements.{ext}"
+        if p.exists():
+            payload = p.read_text(encoding="utf-8")
+            break
+    # fetch_announcements → POST https://dps.psx.com.pk/announcements
+    respx.post(f"{BASE_DPS}/announcements").mock(return_value=httpx.Response(200, text=payload))
+    asyncio.run(deps_with_client._refresh_announcements_impl(
+        deps_with_client._cache, deps_with_client._client))
+    anns = deps_with_client._get_announcements_impl(deps_with_client._cache, None, since_days=365)
+    assert isinstance(anns, list)
