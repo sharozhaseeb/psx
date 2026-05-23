@@ -33,6 +33,8 @@ mcp = FastMCP(
         "Data is 15+ minutes delayed. Informational only — not investment advice. "
         "Call refresh_market before quote-based alerts; refresh_history for indicator/volume rules."
     ),
+    host="127.0.0.1",
+    port=8765,
 )
 log = get_logger("server")
 
