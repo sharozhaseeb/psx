@@ -1472,14 +1472,18 @@ def _i(x) -> int:
 
 
 def _parse_date_flex(s: str) -> Optional[date]:
-    s = str(s).strip()
-    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y", "%d %b %Y", "%b %d, %Y"):
+    """Parse PSX dates in any common format. Strips any time suffix first."""
+    raw = str(s).strip()
+    # Drop any trailing time component (after first space or 'T')
+    head = re.split(r"[ T]", raw, maxsplit=1)[0]
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y", "%d %b %Y", "%b %d, %Y", "%d-%m-%Y"):
         try:
-            return datetime.strptime(s[:11], fmt).date() if fmt == "%b %d, %Y" else datetime.strptime(s[:len(fmt)+2], fmt).date()
+            return datetime.strptime(head, fmt).date()
         except ValueError:
             continue
+    # Last-ditch: ISO parse the first 10 chars
     try:
-        return date.fromisoformat(s[:10])
+        return date.fromisoformat(head[:10])
     except ValueError:
         return None
 
@@ -1524,9 +1528,11 @@ def parse_market_watch(html: str) -> list[dict]:
 
     rows = []
     body = table.find("tbody") or table
+    needed = [i for i in (idx_sym, idx_price, idx_change, idx_volume, idx_high, idx_low) if i is not None]
+    min_cells = (max(needed) + 1) if needed else 1
     for tr in body.find_all("tr"):
         cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < max(filter(None, [idx_sym, idx_price, idx_change, idx_volume, idx_high, idx_low])) + 1:
+        if len(cells) < min_cells:
             continue
         sym = cells[idx_sym].upper() if idx_sym is not None else ""
         if not sym or sym == "SYMBOL":
