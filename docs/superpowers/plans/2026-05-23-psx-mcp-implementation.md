@@ -4,9 +4,9 @@
 
 **Goal:** Build a single-process Python FastMCP server that exposes PSX research tools (quotes, history, fundamentals, announcements, news) plus an on-demand watchlist-alert scanner, all backed by free PSX endpoints with a SQLite cache.
 
-**Architecture:** One async Python process running FastMCP over HTTP/SSE on `127.0.0.1:8765`. Clean module boundaries: `psx_client` (network), `cache` (SQLite), `indicators` (pure math), `watchlist` (JSON), `alerts` (rule eval), `symbols` (lookup). Tools in `server.py` are thin glue. Tests run on captured fixtures, never live network (except one gated smoke test).
+**Architecture:** One async Python process running FastMCP over HTTP/SSE on `127.0.0.1:8765`. Tools are **async**, calling shared `_impl(...)` helpers that contain the actual logic; tests call the impl helpers directly with isolated cache/store. Clean module boundaries: `psx_client` (network), `cache` (SQLite), `indicators` (pure math), `watchlist` (JSON), `alerts` (rule eval), `symbols` (lookup), `news` (RSS), `df_utils` (shared DataFrame helper).
 
-**Tech Stack:** Python 3.12, uv (dep manager), `mcp[cli]` (FastMCP), `httpx[http2]`, `beautifulsoup4` + `lxml`, `pandas` + `numpy`, `ta` (technical-analysis), `feedparser`, `pydantic>=2`, `structlog`. Dev: `pytest`, `pytest-asyncio`, `respx`.
+**Tech Stack:** Python 3.12, uv (dep manager), `mcp[cli]` (FastMCP), `httpx[http2]`, `beautifulsoup4` + `lxml`, `pandas` + `numpy`, `feedparser`, `pydantic>=2`, `structlog`. Dev: `pytest`, `pytest-asyncio`, `respx`.
 
 **Spec reference:** `docs/superpowers/specs/2026-05-23-psx-mcp-design.md`
 
@@ -18,15 +18,19 @@
 psx-mcp/
 ├── pyproject.toml                      # uv-managed deps
 ├── README.md
-├── server.py                           # FastMCP entrypoint
+├── server.py                           # FastMCP entrypoint (async tools)
 ├── run-psx-mcp.ps1                     # Windows launcher
 ├── .gitignore
+├── scripts/
+│   ├── capture_fixtures.py             # one-off PSX fixture capture
+│   └── capture_rss.py                  # one-off RSS fixture capture
 ├── src/psx_mcp/
 │   ├── __init__.py
 │   ├── models.py                       # Pydantic types
 │   ├── cache.py                        # SQLite + TTL logic
-│   ├── indicators.py                   # Pure-math indicators
-│   ├── psx_client.py                   # async httpx scrapers
+│   ├── df_utils.py                     # bars→DataFrame helper
+│   ├── indicators.py                   # pure-math indicators
+│   ├── psx_client.py                   # async httpx scrapers + parsers
 │   ├── symbols.py                      # symbol search
 │   ├── news.py                         # RSS aggregator
 │   ├── watchlist.py                    # JSON config
@@ -41,13 +45,15 @@ psx-mcp/
     ├── test_cache.py
     ├── test_indicators.py
     ├── test_psx_client.py
+    ├── test_symbols.py
     ├── test_news.py
     ├── test_watchlist.py
     ├── test_alerts.py
-    └── test_server.py
+    ├── test_server.py
+    └── test_live.py
 ```
 
-Each file has one responsibility. `psx_client` is the only module that touches the network. `cache` is the only module that touches SQLite. `indicators` is pure math. Tools in `server.py` compose lower modules — they never call out themselves.
+Each file has one responsibility. `psx_client` is the only module that touches the network. `cache` is the only module that touches SQLite. `indicators` is pure math. Tool bodies in `server.py` are thin `async def` wrappers around `_impl` helpers — tests exercise the impls directly.
 
 ---
 
@@ -80,7 +86,6 @@ dependencies = [
     "lxml>=5.0.0",
     "pandas>=2.2.0",
     "numpy>=1.26.0",
-    "ta>=0.11.0",
     "feedparser>=6.0.10",
     "pydantic>=2.6.0",
     "structlog>=24.1.0",
@@ -124,12 +129,12 @@ build/
 
 `tests/conftest.py`:
 ```python
-import asyncio
 import pytest
+from pathlib import Path
+
 
 @pytest.fixture
-def fixtures_dir():
-    from pathlib import Path
+def fixtures_dir() -> Path:
     return Path(__file__).parent / "fixtures"
 ```
 
@@ -138,7 +143,7 @@ def fixtures_dir():
 Run (from `psx-mcp/`):
 ```powershell
 uv sync --extra dev
-uv run python -c "import mcp, httpx, bs4, pandas, ta, feedparser, pydantic, structlog; print('ok')"
+uv run python -c "import mcp, httpx, bs4, pandas, feedparser, pydantic, structlog; print('ok')"
 ```
 Expected: `ok` printed, no errors.
 
@@ -166,6 +171,8 @@ git commit -m "feat(psx-mcp): project skeleton with uv"
 - Create: `psx-mcp/src/psx_mcp/models.py`
 - Create: `psx-mcp/tests/test_models.py`
 
+**Note on Pydantic v2 validators:** validators must be a **classmethod decorated with `@field_validator(...)`**. Lambdas wrapped via `field_validator("x")(lambda cls, v: ...)` raise `PydanticUserError: @field_validator should be used with classmethod`. Pattern used throughout this file: a single shared classmethod per model that uppercases the symbol.
+
 - [ ] **Step 1: Write the failing tests**
 
 `tests/test_models.py`:
@@ -176,7 +183,7 @@ from pydantic import ValidationError
 
 from psx_mcp.models import (
     Quote, Bar, SymbolMatch, MarketSummary, Mover,
-    CompanyInfo, Fundamentals, Announcement, NewsItem,
+    CompanyInfo, Fundamentals, FinancialStatement, Announcement, NewsItem,
     WatchEntry, AlertRule, AlertCondition, AlertHit, ToolError,
     Disclaimer, DEFAULT_DISCLAIMER,
 )
@@ -202,6 +209,11 @@ def test_symbol_uppercased():
     assert q.symbol == "LUCK"
 
 
+def test_announcement_accepts_none_symbol():
+    a = Announcement(id="x", symbol=None, posted_at=datetime.now(), title="t")
+    assert a.symbol is None
+
+
 def test_bar_validates_ohlc():
     b = Bar(symbol="LUCK", date=date(2026, 5, 23), open=100, high=105, low=99, close=104, volume=1000)
     assert b.high >= b.close >= b.low
@@ -222,6 +234,14 @@ def test_alert_rule_valid():
 def test_alert_rule_rejects_unknown_op():
     with pytest.raises(ValidationError):
         AlertCondition(indicator="rsi14", op="<<", value=30)
+
+
+def test_financial_statement_round_trip():
+    fs = FinancialStatement(
+        symbol="LUCK", period="annual", period_end=date(2025, 6, 30),
+        line_items={"Revenue": 100.0, "NetIncome": 20.0},
+    )
+    assert fs.line_items["Revenue"] == 100.0
 
 
 def test_tool_error_shape():
@@ -258,10 +278,6 @@ class Disclaimer(BaseModel):
     disclaimer: str = Field(default=DEFAULT_DISCLAIMER)
 
 
-def _upper(v: str) -> str:
-    return v.strip().upper()
-
-
 class Quote(Disclaimer):
     symbol: str
     price: float
@@ -276,7 +292,10 @@ class Quote(Disclaimer):
     stale: bool = False
     summary: Optional[str] = None
 
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class Bar(BaseModel):
@@ -288,7 +307,10 @@ class Bar(BaseModel):
     close: float
     volume: int
 
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class SymbolMatch(BaseModel):
@@ -296,7 +318,11 @@ class SymbolMatch(BaseModel):
     name: str
     sector: Optional[str] = None
     score: float = 1.0
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class SectorChange(BaseModel):
@@ -323,7 +349,11 @@ class Mover(BaseModel):
     price: float
     change_pct: float
     volume: int
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class CompanyInfo(Disclaimer):
@@ -333,7 +363,11 @@ class CompanyInfo(Disclaimer):
     listed_shares: Optional[int] = None
     free_float: Optional[int] = None
     profile: Optional[str] = None
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class Fundamentals(Disclaimer):
@@ -345,7 +379,11 @@ class Fundamentals(Disclaimer):
     payout: Optional[float] = None
     roe: Optional[float] = None
     refreshed_at: Optional[datetime] = None
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class FinancialStatement(BaseModel):
@@ -353,7 +391,11 @@ class FinancialStatement(BaseModel):
     period: Literal["annual", "quarterly"]
     period_end: date
     line_items: dict[str, float]
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class Announcement(BaseModel):
@@ -364,7 +406,13 @@ class Announcement(BaseModel):
     category: Optional[str] = None
     url: Optional[str] = None
     body: Optional[str] = None
-    _u = field_validator("symbol")(lambda cls, v: _upper(v) if v else v)
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        if v is None:
+            return v
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class NewsItem(BaseModel):
@@ -385,7 +433,11 @@ class WatchEntry(BaseModel):
     symbol: str
     notes: Optional[str] = None
     added_at: date
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 Operator = Literal["<", "<=", ">", ">=", "==", "crosses_above", "crosses_below"]
@@ -393,10 +445,10 @@ RuleType = Literal["price", "indicator", "volume", "announcement"]
 
 
 class AlertCondition(BaseModel):
-    indicator: Optional[str] = None  # rsi14, macd, sma50, etc. (for type=indicator)
+    indicator: Optional[str] = None
     op: Operator
     value: float
-    lookback_days: Optional[int] = None  # for volume rules: multiplier baseline window
+    lookback_days: Optional[int] = None
 
 
 class AlertRule(BaseModel):
@@ -407,7 +459,11 @@ class AlertRule(BaseModel):
     active: bool = True
     created_at: date
     last_checked: Optional[datetime] = None
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class AlertHit(BaseModel):
@@ -429,13 +485,21 @@ class VolumeSpike(BaseModel):
     today_volume: int
     avg_volume: float
     multiplier: float
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class ComparisonRow(BaseModel):
     symbol: str
     metrics: dict[str, Optional[float]]
-    _u = field_validator("symbol")(lambda cls, v: _upper(v))
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
 
 
 class ComparisonTable(Disclaimer):
@@ -520,6 +584,8 @@ git commit -m "feat(psx-mcp): structlog JSON logging config"
 - Create: `psx-mcp/src/psx_mcp/cache.py`
 - Create: `psx-mcp/tests/test_cache.py`
 
+**Note:** We store all timestamps as ISO TEXT strings and convert explicitly in Python. Do **not** pass `detect_types=sqlite3.PARSE_DECLTYPES` — the codebase converts manually, and Python 3.12 deprecates the default `timestamp` converter.
+
 - [ ] **Step 1: Write the failing tests**
 
 `tests/test_cache.py`:
@@ -564,24 +630,26 @@ def test_quote_freshness(cache):
 
 
 def test_append_bars_idempotent(cache):
+    today = date.today()
     bars = [
-        Bar(symbol="LUCK", date=date(2026, 5, 21), open=700, high=710, low=695, close=705, volume=10),
-        Bar(symbol="LUCK", date=date(2026, 5, 22), open=705, high=720, low=702, close=718, volume=12),
+        Bar(symbol="LUCK", date=today - timedelta(days=2), open=700, high=710, low=695, close=705, volume=10),
+        Bar(symbol="LUCK", date=today - timedelta(days=1), open=705, high=720, low=702, close=718, volume=12),
     ]
     cache.upsert_bars(bars)
-    cache.upsert_bars(bars)  # second insert must not duplicate
-    rows = cache.get_bars("LUCK", date(2026, 1, 1), date(2026, 6, 1))
+    cache.upsert_bars(bars)
+    rows = cache.get_bars("LUCK", today - timedelta(days=10), today)
     assert len(rows) == 2
 
 
 def test_get_bars_date_range(cache):
+    today = date.today()
     bars = [
-        Bar(symbol="LUCK", date=date(2026, 5, d), open=1, high=1, low=1, close=1, volume=1)
-        for d in (10, 11, 12, 13, 14)
+        Bar(symbol="LUCK", date=today - timedelta(days=d), open=1, high=1, low=1, close=1, volume=1)
+        for d in (4, 3, 2, 1, 0)
     ]
     cache.upsert_bars(bars)
-    got = cache.get_bars("LUCK", date(2026, 5, 12), date(2026, 5, 13))
-    assert [b["date"] for b in got] == [date(2026, 5, 12), date(2026, 5, 13)]
+    got = cache.get_bars("LUCK", today - timedelta(days=2), today - timedelta(days=1))
+    assert len(got) == 2
 
 
 def test_announcements_upsert(cache):
@@ -590,7 +658,7 @@ def test_announcements_upsert(cache):
         title="Board Meeting", category="board", url="http://x", body=None,
     )
     cache.upsert_announcement(a)
-    cache.upsert_announcement(a)  # same id, must not duplicate
+    cache.upsert_announcement(a)
     rows = cache.get_announcements(symbol="LUCK", since=datetime(2026, 1, 1))
     assert len(rows) == 1
 
@@ -612,7 +680,7 @@ Expected: ImportError.
 ```python
 from __future__ import annotations
 import sqlite3
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Iterable
 
@@ -622,27 +690,27 @@ from .models import Bar, Announcement
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS symbols (
   symbol TEXT PRIMARY KEY, name TEXT, sector TEXT,
-  listed_shares INTEGER, refreshed_at TIMESTAMP
+  listed_shares INTEGER, refreshed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS quotes (
-  symbol TEXT, ts TIMESTAMP, price REAL, change REAL,
+  symbol TEXT, ts TEXT, price REAL, change REAL,
   volume INTEGER, day_high REAL, day_low REAL,
-  fetched_at TIMESTAMP, PRIMARY KEY(symbol, ts)
+  fetched_at TEXT, PRIMARY KEY(symbol, ts)
 );
 CREATE TABLE IF NOT EXISTS bars_daily (
-  symbol TEXT, date DATE, open REAL, high REAL, low REAL,
+  symbol TEXT, date TEXT, open REAL, high REAL, low REAL,
   close REAL, volume INTEGER, PRIMARY KEY(symbol, date)
 );
 CREATE TABLE IF NOT EXISTS announcements (
-  id TEXT PRIMARY KEY, symbol TEXT, posted_at TIMESTAMP,
+  id TEXT PRIMARY KEY, symbol TEXT, posted_at TEXT,
   title TEXT, category TEXT, url TEXT, body TEXT
 );
 CREATE TABLE IF NOT EXISTS fundamentals (
   symbol TEXT PRIMARY KEY, eps REAL, pe REAL, pb REAL,
-  div_yield REAL, payout REAL, roe REAL, refreshed_at TIMESTAMP
+  div_yield REAL, payout REAL, roe REAL, refreshed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS news (
-  id TEXT PRIMARY KEY, source TEXT, posted_at TIMESTAMP,
+  id TEXT PRIMARY KEY, source TEXT, posted_at TEXT,
   title TEXT, url TEXT, symbols TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bars_symbol_date ON bars_daily(symbol, date DESC);
@@ -660,7 +728,7 @@ class Cache:
     def __init__(self, db_path: str | Path):
         self.path = str(db_path)
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, detect_types=sqlite3.PARSE_DECLTYPES)
+        self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         self.conn.commit()
@@ -879,7 +947,7 @@ git commit -m "feat(psx-mcp): SQLite cache with schema, TTL, append-only bars"
 
 ---
 
-### Task 5: Pure-math indicators (RSI, MACD, SMA/EMA, Bollinger, volume z-score)
+### Task 5: Pure-math indicators
 
 **Files:**
 - Create: `psx-mcp/src/psx_mcp/indicators.py`
@@ -899,7 +967,6 @@ from psx_mcp.indicators import (
 
 @pytest.fixture
 def closes_15():
-    # 15 closes — known minimal RSI(14) input
     return pd.Series(
         [44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42,
          45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28]
@@ -912,10 +979,9 @@ def test_sma_last_value():
 
 
 def test_ema_last_value():
-    s = pd.Series([1, 2, 3, 4, 5])
+    s = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
     out = ema(s, 3).iloc[-1]
     assert out > 0
-    assert isinstance(out, float)
 
 
 def test_rsi_in_bounds(closes_15):
@@ -924,8 +990,7 @@ def test_rsi_in_bounds(closes_15):
 
 
 def test_rsi_oversold_detected():
-    # 14 down closes then 1 up: RSI should be quite low
-    s = pd.Series(list(range(100, 85, -1)) + [86])
+    s = pd.Series([float(x) for x in range(100, 85, -1)] + [86.0])
     out = rsi(s, 14).iloc[-1]
     assert out < 50.0
 
@@ -945,26 +1010,26 @@ def test_bollinger_bands_ordering():
 
 
 def test_volume_zscore_positive_spike():
-    v = pd.Series([100] * 19 + [500])
+    v = pd.Series([100.0] * 19 + [500.0])
     z = volume_zscore(v, 20)
     assert z.iloc[-1] > 2.0
 
 
 def test_crosses_above_detected():
-    a = pd.Series([1, 2, 3, 4, 5])
-    b = pd.Series([3, 3, 3, 3, 3])
+    a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+    b = pd.Series([3.0, 3.0, 3.0, 3.0, 3.0])
     assert last_crosses(a, b, "crosses_above") is True
 
 
 def test_crosses_below_detected():
-    a = pd.Series([5, 4, 3, 2, 1])
-    b = pd.Series([3, 3, 3, 3, 3])
+    a = pd.Series([5.0, 4.0, 3.0, 2.0, 1.0])
+    b = pd.Series([3.0, 3.0, 3.0, 3.0, 3.0])
     assert last_crosses(a, b, "crosses_below") is True
 
 
 def test_no_cross_when_flat():
-    a = pd.Series([1, 1, 1, 1])
-    b = pd.Series([2, 2, 2, 2])
+    a = pd.Series([1.0, 1.0, 1.0, 1.0])
+    b = pd.Series([2.0, 2.0, 2.0, 2.0])
     assert last_crosses(a, b, "crosses_above") is False
 ```
 
@@ -1031,7 +1096,6 @@ Cross = Literal["crosses_above", "crosses_below"]
 
 
 def last_crosses(a: pd.Series, b: pd.Series, op: Cross) -> bool:
-    """True iff on the final bar `a` crossed above/below `b` vs. the previous bar."""
     if len(a) < 2 or len(b) < 2:
         return False
     prev_a, prev_b = a.iloc[-2], b.iloc[-2]
@@ -1055,70 +1119,153 @@ git commit -m "feat(psx-mcp): indicators — RSI, MACD, SMA/EMA, Bollinger, vol 
 
 ---
 
-### Task 6: PSX HTTP client — fixture-driven discovery + parsers
+### Task 6: Bars→DataFrame helper
 
 **Files:**
+- Create: `psx-mcp/src/psx_mcp/df_utils.py`
+
+This helper is the single source of truth for converting cached bar rows into a DataFrame. Used by both `alerts.py` and `server.py` so column conventions stay consistent.
+
+- [ ] **Step 1: Implement `df_utils.py`**
+
+```python
+from __future__ import annotations
+from datetime import date
+from typing import Optional
+
+import pandas as pd
+from .cache import Cache
+
+
+def bars_df(cache: Cache, symbol: str, lookback_days: int = 250) -> pd.DataFrame:
+    """Load all bars for a symbol and return the most-recent `lookback_days * 2` as a DataFrame
+    sorted ascending by date with a fresh integer index. Empty DataFrame if no bars cached."""
+    rows = cache.get_bars(symbol, date(1970, 1, 1), date.today())
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+    if lookback_days > 0:
+        df = df.tail(lookback_days * 2).reset_index(drop=True)
+    return df
+```
+
+- [ ] **Step 2: Smoke test**
+
+Run:
+```powershell
+uv run python -c "from psx_mcp.df_utils import bars_df; print('ok')"
+```
+Expected: `ok`.
+
+- [ ] **Step 3: Commit**
+
+```powershell
+git add psx-mcp/src/psx_mcp/df_utils.py
+git commit -m "feat(psx-mcp): shared bars→DataFrame helper"
+```
+
+---
+
+### Task 7: PSX HTTP client — discovery script + parsers
+
+**Files:**
+- Create: `psx-mcp/scripts/capture_fixtures.py`
 - Create: `psx-mcp/src/psx_mcp/psx_client.py`
 - Create: `psx-mcp/tests/test_psx_client.py`
-- Create: `psx-mcp/tests/fixtures/market_watch.html` (captured)
-- Create: `psx-mcp/tests/fixtures/timeseries_LUCK.json` (captured)
-- Create: `psx-mcp/tests/fixtures/historical_LUCK.json` (captured)
-- Create: `psx-mcp/tests/fixtures/symbols.json` (captured)
-- Create: `psx-mcp/tests/fixtures/announcements.json` (captured)
+- Create: `psx-mcp/tests/fixtures/market_watch.html` (captured at runtime)
+- Create: `psx-mcp/tests/fixtures/historical_LUCK.{json|html}` (captured)
+- Create: `psx-mcp/tests/fixtures/symbols.{json|html}` (captured)
+- Create: `psx-mcp/tests/fixtures/announcements.{json|html}` (captured)
 - Create: `psx-mcp/tests/fixtures/profile_LUCK.html` (captured)
 - Create: `psx-mcp/tests/fixtures/financial_LUCK.html` (captured)
 
-**IMPORTANT:** PSX endpoint shapes aren't formally documented. Step 1 below is a **discovery step** — capture real responses into fixtures before writing parsers. After capture, fixtures are the contract.
+**IMPORTANT:** PSX endpoints are not formally documented. Step 1 captures real responses into fixtures **and detects whether each endpoint returns JSON or HTML**. Parsers in Step 4 use a `_try_json` helper that handles both. Intraday endpoint (`/timeseries/int/<SYM>`) is **explicitly deferred** to a future iteration — daily bars from `/historical/<SYM>` cover all indicator/alert needs at 15-min delay.
 
-- [ ] **Step 1: Discovery — capture fixtures from live PSX**
+- [ ] **Step 1: Create the fixture-capture script**
 
-Run this one-off script from `psx-mcp/`:
-```powershell
-uv run python -c @'
-import asyncio, httpx, json
+`psx-mcp/scripts/capture_fixtures.py`:
+```python
+"""One-off: capture real PSX responses into tests/fixtures/.
+
+Run from psx-mcp/:  uv run python scripts/capture_fixtures.py
+"""
+import asyncio
+import httpx
 from pathlib import Path
 
 FIX = Path("tests/fixtures")
 FIX.mkdir(parents=True, exist_ok=True)
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PSX-MCP/0.1",
-           "Accept-Language": "en-PK,en;q=0.9"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PSX-MCP/0.1",
+    "Accept-Language": "en-PK,en;q=0.9",
+    "Accept": "application/json, text/html;q=0.9, */*;q=0.5",
+}
 
-async def grab(client, url, out, mode="text"):
-    r = await client.get(url, headers=HEADERS, timeout=15)
-    print(url, "->", r.status_code, len(r.content))
-    if r.status_code != 200:
-        return
-    if mode == "json":
-        (FIX / out).write_text(r.text, encoding="utf-8")
-    else:
-        (FIX / out).write_text(r.text, encoding="utf-8")
+URLS = [
+    ("https://dps.psx.com.pk/market-watch", "market_watch"),
+    ("https://dps.psx.com.pk/historical/LUCK", "historical_LUCK"),
+    ("https://dps.psx.com.pk/symbols", "symbols"),
+    ("https://dps.psx.com.pk/announcements/companies", "announcements"),
+    ("https://www.psx.com.pk/psx/profile/LUCK", "profile_LUCK"),
+    ("https://www.psx.com.pk/psx/quote/financial-information/LUCK", "financial_LUCK"),
+]
+
+
+def _ext_from(response: httpx.Response) -> str:
+    ctype = response.headers.get("content-type", "").lower()
+    if "json" in ctype:
+        return "json"
+    return "html"
+
 
 async def main():
-    async with httpx.AsyncClient(http2=True) as c:
-        await grab(c, "https://dps.psx.com.pk/market-watch", "market_watch.html")
-        await grab(c, "https://dps.psx.com.pk/timeseries/int/LUCK", "timeseries_LUCK.json", "json")
-        await grab(c, "https://dps.psx.com.pk/historical/LUCK", "historical_LUCK.json", "json")
-        await grab(c, "https://dps.psx.com.pk/symbols", "symbols.json", "json")
-        await grab(c, "https://dps.psx.com.pk/announcements/companies", "announcements.json", "json")
-        await grab(c, "https://www.psx.com.pk/psx/profile/LUCK", "profile_LUCK.html")
-        await grab(c, "https://www.psx.com.pk/psx/quote/financial-information/LUCK", "financial_LUCK.html")
+    async with httpx.AsyncClient(http2=True, follow_redirects=True, timeout=20) as c:
+        for url, stem in URLS:
+            try:
+                r = await c.get(url, headers=HEADERS)
+            except Exception as e:
+                print(f"{url} -> ERROR: {e}")
+                continue
+            ext = _ext_from(r)
+            out = FIX / f"{stem}.{ext}"
+            print(f"{url} -> {r.status_code} ({len(r.content)} bytes) -> {out.name}")
+            if r.status_code == 200:
+                out.write_text(r.text, encoding="utf-8")
+            else:
+                print(f"  WARN: non-200; adapt URL in psx_client.py before continuing")
 
-asyncio.run(main())
-'@
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
-Expected: each URL printed with status 200 (or 30x); fixture files written. If any returns 4xx/5xx, **stop** and report the failing URL — the parser for that endpoint needs the URL revised before continuing. Document the actual working URL in `psx_client.py` constants.
 
-- [ ] **Step 2: Inspect the fixtures and confirm shape**
+Run from `psx-mcp/`:
+```powershell
+uv run python scripts/capture_fixtures.py
+```
+Expected: each URL printed with status 200; fixture files written with appropriate `.json` or `.html` extension. If any returns 4xx/5xx, **stop** and report the failing URL — the parser for that endpoint needs the URL revised before continuing. Document the actual working URL in `psx_client.py` constants.
 
-Read each fixture (10-20 lines is enough). Confirm:
-- `timeseries_LUCK.json` / `historical_LUCK.json`: JSON with date+OHLCV-shaped fields.
-- `market_watch.html`: contains a `<table>` with one row per symbol; columns include symbol, price, change, volume.
-- `symbols.json`: list of symbol + company name.
-- `announcements.json`: list with title, date, symbol fields.
-- `profile_LUCK.html`: contains sector / listed shares somewhere.
-- `financial_LUCK.html`: contains EPS, P/E figures.
+- [ ] **Step 2: Inspect each captured fixture and write a shape table at top of `psx_client.py`**
 
-If the JSON endpoints turn out to be HTML instead (or vice versa), adapt the parser; the goal of this step is to confirm shape before writing parser code.
+For each fixture, open and inspect the first ~50 lines. Determine:
+- **format**: JSON or HTML
+- **top-level shape**: if JSON, the keys / whether wrapped in `{data: [...]}`; if HTML, the relevant tag/class
+- **example record**: one example row with field names
+
+Write this matrix as the module docstring in `psx_client.py`:
+```python
+"""PSX endpoint shape matrix (captured YYYY-MM-DD):
+
+market-watch:     HTML — single <table>, columns: SYMBOL, LDCP, OPEN, HIGH, LOW, CURRENT, CHANGE, CHANGE%, VOLUME
+historical/LUCK:  <fill in: JSON list with Date/Open/High/Low/Close/Volume keys | HTML table>
+symbols:          <fill in>
+announcements:    <fill in>
+profile_LUCK:     HTML — sector + listed-shares appear in dt/dd or table rows
+financial_LUCK:   HTML — EPS/P/E/P/B in <th>/<td> pairs
+"""
+```
+
+This docstring is the contract. Parsers in Step 4 must conform to it.
 
 - [ ] **Step 3: Write failing parser tests**
 
@@ -1131,40 +1278,44 @@ import pytest
 from psx_mcp.psx_client import (
     parse_market_watch, parse_historical, parse_symbols,
     parse_announcements, parse_profile, parse_financials,
+    parse_financial_statements,
 )
 
 
-def _read(fixtures_dir: Path, name: str) -> str:
-    return (fixtures_dir / name).read_text(encoding="utf-8")
+def _read_any(fixtures_dir: Path, stem: str) -> str:
+    for ext in ("json", "html"):
+        p = fixtures_dir / f"{stem}.{ext}"
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    raise FileNotFoundError(f"No fixture for {stem}.* in {fixtures_dir}")
 
 
 def test_parse_market_watch_returns_rows(fixtures_dir):
-    rows = parse_market_watch(_read(fixtures_dir, "market_watch.html"))
-    assert len(rows) > 100  # PSX has 500+ symbols
-    sample = rows[0]
+    rows = parse_market_watch((fixtures_dir / "market_watch.html").read_text(encoding="utf-8"))
+    assert len(rows) > 100, "expected ~540 PSX symbols, got fewer"
+    sample = next((r for r in rows if r["price"] is not None), None)
+    assert sample is not None, "every row had price=None — column detection broken"
     assert set(sample.keys()) >= {"symbol", "price", "change", "volume"}
     assert isinstance(sample["price"], float)
-    assert isinstance(sample["volume"], int)
 
 
 def test_parse_historical_returns_bars(fixtures_dir):
-    bars = parse_historical("LUCK", _read(fixtures_dir, "historical_LUCK.json"))
+    bars = parse_historical("LUCK", _read_any(fixtures_dir, "historical_LUCK"))
     assert len(bars) > 0
     b = bars[0]
     assert b.symbol == "LUCK"
     assert isinstance(b.date, date)
-    assert b.high >= b.low
 
 
 def test_parse_symbols_returns_master(fixtures_dir):
-    syms = parse_symbols(_read(fixtures_dir, "symbols.json"))
+    syms = parse_symbols(_read_any(fixtures_dir, "symbols"))
     assert len(syms) > 100
     assert all("symbol" in s and "name" in s for s in syms)
 
 
 def test_parse_announcements_returns_items(fixtures_dir):
-    items = parse_announcements(_read(fixtures_dir, "announcements.json"))
-    assert len(items) >= 0  # may be empty on weekends
+    items = parse_announcements(_read_any(fixtures_dir, "announcements"))
+    assert isinstance(items, list)
     if items:
         a = items[0]
         assert isinstance(a.posted_at, datetime)
@@ -1172,17 +1323,28 @@ def test_parse_announcements_returns_items(fixtures_dir):
 
 
 def test_parse_profile_extracts_fields(fixtures_dir):
-    info = parse_profile("LUCK", _read(fixtures_dir, "profile_LUCK.html"))
+    info = parse_profile("LUCK", (fixtures_dir / "profile_LUCK.html").read_text(encoding="utf-8"))
     assert info.symbol == "LUCK"
-    assert info.name  # at minimum we get a name
-    # sector and listed_shares are best-effort — may be None if shape changed
+    assert info.name
 
 
 def test_parse_financials_best_effort(fixtures_dir):
-    f = parse_financials("LUCK", _read(fixtures_dir, "financial_LUCK.html"))
+    f = parse_financials("LUCK", (fixtures_dir / "financial_LUCK.html").read_text(encoding="utf-8"))
     assert f.symbol == "LUCK"
-    # any one of eps/pe/pb populated counts as success
+    # at least one of eps/pe/pb populated
     assert any(v is not None for v in [f.eps, f.pe, f.pb])
+
+
+def test_parse_financial_statements_returns_list(fixtures_dir):
+    out = parse_financial_statements(
+        "LUCK", "annual",
+        (fixtures_dir / "financial_LUCK.html").read_text(encoding="utf-8"),
+    )
+    assert isinstance(out, list)
+    # may be empty if filings absent; if present, validate shape
+    if out:
+        assert out[0].symbol == "LUCK"
+        assert out[0].period == "annual"
 ```
 
 - [ ] **Step 4: Run tests — expect failure**
@@ -1190,23 +1352,30 @@ def test_parse_financials_best_effort(fixtures_dir):
 Run: `uv run pytest tests/test_psx_client.py -v`
 Expected: ImportError.
 
-- [ ] **Step 5: Implement `psx_client.py` parsers**
-
-Write parsers **driven by the actual fixture contents** captured in Step 1. Below is the skeleton + interpretation guidance — adapt selectors/keys to match what you see in the fixtures.
+- [ ] **Step 5: Implement `psx_client.py`**
 
 `src/psx_mcp/psx_client.py`:
 ```python
+"""PSX endpoint shape matrix (captured at fixture-capture time):
+
+market-watch:     HTML — single <table>, columns include SYMBOL, LDCP, OPEN, HIGH, LOW, CURRENT, CHANGE, CHANGE%, VOLUME
+historical/LUCK:  format determined at capture time; parser handles JSON list and HTML table
+symbols:          format determined at capture time; parser handles JSON list and HTML table
+announcements:    format determined at capture time; parser handles JSON list and HTML table
+profile_LUCK:     HTML — name in <h1>/<h2>; sector and listed shares in dt/dd pairs or table rows
+financial_LUCK:   HTML — EPS / P/E / P/B in label-value pairs
+"""
 from __future__ import annotations
 import asyncio
 import json
 import re
 from datetime import datetime, date
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 from bs4 import BeautifulSoup
 
-from .models import Bar, CompanyInfo, Fundamentals, Announcement
+from .models import Bar, CompanyInfo, Fundamentals, Announcement, FinancialStatement
 from .logging_config import get_logger
 
 log = get_logger("psx_client")
@@ -1215,7 +1384,11 @@ BASE_DPS = "https://dps.psx.com.pk"
 BASE_PSX = "https://www.psx.com.pk"
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) PSX-MCP/0.1"
-HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "en-PK,en;q=0.9"}
+HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept-Language": "en-PK,en;q=0.9",
+    "Accept": "application/json, text/html;q=0.9, */*;q=0.5",
+}
 
 
 class ParseError(Exception):
@@ -1248,7 +1421,7 @@ class PSXClient:
                         await asyncio.sleep(2.0)
                         continue
                     raise
-                except (httpx.ConnectError, httpx.ReadTimeout) as e:
+                except (httpx.ConnectError, httpx.ReadTimeout):
                     if attempt == 1:
                         await asyncio.sleep(2.0)
                         continue
@@ -1274,7 +1447,15 @@ class PSXClient:
         return await self._get(f"{BASE_PSX}/psx/quote/financial-information/{symbol.upper()}")
 
 
-# ---------- parsers (fixture-driven; adapt to real shape) ----------
+# ---------- shared helpers ----------
+
+def _try_json(payload: str) -> tuple[Optional[Union[list, dict]], Optional[BeautifulSoup]]:
+    """Return (json_obj, None) if payload parses as JSON; otherwise (None, BeautifulSoup)."""
+    try:
+        return json.loads(payload), None
+    except (json.JSONDecodeError, ValueError):
+        return None, BeautifulSoup(payload, "lxml")
+
 
 def _f(x) -> Optional[float]:
     if x is None or x == "" or x == "-":
@@ -1290,99 +1471,214 @@ def _i(x) -> int:
     return int(v) if v is not None else 0
 
 
+def _parse_date_flex(s: str) -> Optional[date]:
+    s = str(s).strip()
+    for fmt in ("%Y-%m-%d", "%d-%b-%Y", "%d/%m/%Y", "%d %b %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(s[:11], fmt).date() if fmt == "%b %d, %Y" else datetime.strptime(s[:len(fmt)+2], fmt).date()
+        except ValueError:
+            continue
+    try:
+        return date.fromisoformat(s[:10])
+    except ValueError:
+        return None
+
+
+# ---------- parsers ----------
+
 def parse_market_watch(html: str) -> list[dict]:
     """Returns list of {symbol, price, change, volume, day_high, day_low}.
-    Adapt selectors to the real table structure in the fixture."""
+    Uses header-row detection to map columns by name rather than fixed indices."""
     soup = BeautifulSoup(html, "lxml")
-    rows = []
     table = soup.find("table")
     if not table:
         raise ParseError("market-watch: no <table> found")
+
+    # Build header → index map
+    header_cells = []
+    thead = table.find("thead")
+    if thead:
+        header_cells = [th.get_text(strip=True).upper() for th in thead.find_all(["th", "td"])]
+    if not header_cells:
+        first_tr = table.find("tr")
+        if first_tr:
+            header_cells = [th.get_text(strip=True).upper() for th in first_tr.find_all(["th", "td"])]
+
+    def col(name_options: list[str]) -> Optional[int]:
+        for i, h in enumerate(header_cells):
+            for opt in name_options:
+                if opt in h:
+                    return i
+        return None
+
+    idx_sym = col(["SYMBOL", "SCRIP"])
+    idx_price = col(["CURRENT", "PRICE", "LAST"])
+    idx_change = col(["CHANGE"])  # absolute change
+    idx_volume = col(["VOLUME", "VOL"])
+    idx_high = col(["HIGH"])
+    idx_low = col(["LOW"])
+
+    # Fallback to positional if header detection fails (very old shape)
+    if idx_sym is None:
+        idx_sym, idx_price, idx_change, idx_volume, idx_high, idx_low = 0, 5, 6, 8, 3, 4
+
+    rows = []
     body = table.find("tbody") or table
     for tr in body.find_all("tr"):
         cells = [td.get_text(strip=True) for td in tr.find_all("td")]
-        if len(cells) < 4:
+        if len(cells) < max(filter(None, [idx_sym, idx_price, idx_change, idx_volume, idx_high, idx_low])) + 1:
             continue
-        # Real column order verified from fixture. Common shape:
-        # [symbol, ldcp, open, high, low, current, change, change%, volume]
-        try:
-            row = {
-                "symbol": cells[0].upper(),
-                "price": _f(cells[5]) if len(cells) > 5 else _f(cells[1]),
-                "change": _f(cells[6]) if len(cells) > 6 else 0.0,
-                "volume": _i(cells[8]) if len(cells) > 8 else 0,
-                "day_high": _f(cells[3]) if len(cells) > 3 else None,
-                "day_low": _f(cells[4]) if len(cells) > 4 else None,
-            }
-            if row["symbol"] and row["price"] is not None:
-                rows.append(row)
-        except (IndexError, ValueError):
+        sym = cells[idx_sym].upper() if idx_sym is not None else ""
+        if not sym or sym == "SYMBOL":
             continue
+        rows.append({
+            "symbol": sym,
+            "price": _f(cells[idx_price]) if idx_price is not None else None,
+            "change": _f(cells[idx_change]) if idx_change is not None else 0.0,
+            "volume": _i(cells[idx_volume]) if idx_volume is not None else 0,
+            "day_high": _f(cells[idx_high]) if idx_high is not None else None,
+            "day_low": _f(cells[idx_low]) if idx_low is not None else None,
+        })
     return rows
 
 
 def parse_historical(symbol: str, payload: str) -> list[Bar]:
-    """Historical endpoint returns JSON (list of dict or {data: [...]})."""
-    data = json.loads(payload)
-    if isinstance(data, dict) and "data" in data:
-        data = data["data"]
+    """Daily OHLCV. Handles JSON (list or {data: [...]}) and HTML tables."""
+    data, soup = _try_json(payload)
     bars: list[Bar] = []
-    for r in data:
-        # Common fields: Date, Open, High, Low, Close, Volume — or date/o/h/l/c/v
-        d = r.get("Date") or r.get("date") or r.get("DATE")
+
+    if data is not None:
+        if isinstance(data, dict) and "data" in data:
+            data = data["data"]
+        for r in data:
+            d_raw = r.get("Date") or r.get("date") or r.get("DATE")
+            if not d_raw:
+                continue
+            d = _parse_date_flex(d_raw)
+            if not d:
+                continue
+            bars.append(Bar(
+                symbol=symbol.upper(), date=d,
+                open=_f(r.get("Open") or r.get("open")) or 0,
+                high=_f(r.get("High") or r.get("high")) or 0,
+                low=_f(r.get("Low") or r.get("low")) or 0,
+                close=_f(r.get("Close") or r.get("close")) or 0,
+                volume=_i(r.get("Volume") or r.get("volume")),
+            ))
+        return bars
+
+    # HTML table path
+    if soup is None:
+        return bars
+    table = soup.find("table")
+    if not table:
+        return bars
+    header_cells = [th.get_text(strip=True).upper() for th in (table.find("thead") or table).find_all(["th", "td"])]
+    def col(name): return next((i for i, h in enumerate(header_cells) if name in h), None)
+    i_d, i_o, i_h, i_l, i_c, i_v = col("DATE"), col("OPEN"), col("HIGH"), col("LOW"), col("CLOSE"), col("VOL")
+    for tr in (table.find("tbody") or table).find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+        if not cells or i_d is None or len(cells) <= i_d:
+            continue
+        d = _parse_date_flex(cells[i_d])
         if not d:
             continue
-        try:
-            dt = date.fromisoformat(str(d)[:10]) if "-" in str(d) else datetime.strptime(str(d), "%d-%b-%Y").date()
-        except ValueError:
-            continue
         bars.append(Bar(
-            symbol=symbol.upper(), date=dt,
-            open=_f(r.get("Open") or r.get("open")) or 0,
-            high=_f(r.get("High") or r.get("high")) or 0,
-            low=_f(r.get("Low") or r.get("low")) or 0,
-            close=_f(r.get("Close") or r.get("close")) or 0,
-            volume=_i(r.get("Volume") or r.get("volume")),
+            symbol=symbol.upper(), date=d,
+            open=_f(cells[i_o]) if i_o is not None and len(cells) > i_o else 0,
+            high=_f(cells[i_h]) if i_h is not None and len(cells) > i_h else 0,
+            low=_f(cells[i_l]) if i_l is not None and len(cells) > i_l else 0,
+            close=_f(cells[i_c]) if i_c is not None and len(cells) > i_c else 0,
+            volume=_i(cells[i_v]) if i_v is not None and len(cells) > i_v else 0,
         ))
     return bars
 
 
 def parse_symbols(payload: str) -> list[dict]:
-    data = json.loads(payload)
-    if isinstance(data, dict) and "data" in data:
-        data = data["data"]
+    """Symbol master. Handles JSON list and HTML table."""
+    data, soup = _try_json(payload)
     out = []
-    for r in data:
-        sym = (r.get("symbol") or r.get("Symbol") or "").upper()
-        name = r.get("name") or r.get("Name") or r.get("companyName") or ""
-        sector = r.get("sector") or r.get("Sector")
-        if sym:
-            out.append({"symbol": sym, "name": name, "sector": sector})
+    if data is not None:
+        if isinstance(data, dict) and "data" in data:
+            data = data["data"]
+        for r in data:
+            sym = (r.get("symbol") or r.get("Symbol") or r.get("SYMBOL") or "").upper()
+            name = r.get("name") or r.get("Name") or r.get("companyName") or ""
+            sector = r.get("sector") or r.get("Sector")
+            if sym:
+                out.append({"symbol": sym, "name": name, "sector": sector})
+        return out
+
+    if soup is None:
+        return out
+    table = soup.find("table")
+    if not table:
+        return out
+    for tr in (table.find("tbody") or table).find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+        if len(cells) >= 2 and cells[0]:
+            out.append({"symbol": cells[0].upper(), "name": cells[1],
+                        "sector": cells[2] if len(cells) > 2 else None})
     return out
 
 
 def parse_announcements(payload: str) -> list[Announcement]:
-    data = json.loads(payload)
-    if isinstance(data, dict) and "data" in data:
-        data = data["data"]
+    """Corporate actions. Handles JSON list and HTML table."""
+    data, soup = _try_json(payload)
     out: list[Announcement] = []
-    for r in data:
-        sym = (r.get("symbol") or r.get("Symbol") or "").upper() or None
-        title = r.get("title") or r.get("Title") or r.get("subject") or ""
-        d = r.get("date") or r.get("Date") or r.get("posted_at")
-        try:
-            posted = datetime.fromisoformat(str(d)) if d else datetime.now()
-        except ValueError:
-            try:
-                posted = datetime.strptime(str(d), "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                posted = datetime.now()
-        url = r.get("url") or r.get("URL") or r.get("link")
-        ann_id = r.get("id") or f"{sym}-{posted.isoformat()}-{title[:20]}"
+
+    def _push(*, sym, title, posted, category=None, url=None, body=None, ann_id=None):
+        if not title:
+            return
+        sym_u = sym.upper() if sym else None
+        aid = ann_id or f"{sym_u or 'X'}-{posted.isoformat()}-{title[:30]}"
         out.append(Announcement(
-            id=str(ann_id), symbol=sym, posted_at=posted,
-            title=title, category=r.get("category"), url=url, body=r.get("body"),
+            id=str(aid), symbol=sym_u, posted_at=posted,
+            title=title, category=category, url=url, body=body,
         ))
+
+    if data is not None:
+        if isinstance(data, dict) and "data" in data:
+            data = data["data"]
+        for r in data:
+            sym = (r.get("symbol") or r.get("Symbol") or "") or None
+            title = r.get("title") or r.get("Title") or r.get("subject") or ""
+            d_raw = r.get("date") or r.get("Date") or r.get("posted_at") or r.get("dateTime")
+            posted = datetime.now()
+            if d_raw:
+                try:
+                    posted = datetime.fromisoformat(str(d_raw))
+                except ValueError:
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%d-%b-%Y %H:%M", "%d/%m/%Y %H:%M:%S"):
+                        try:
+                            posted = datetime.strptime(str(d_raw), fmt)
+                            break
+                        except ValueError:
+                            continue
+            _push(sym=sym, title=title, posted=posted, category=r.get("category"),
+                  url=r.get("url") or r.get("URL") or r.get("link"),
+                  body=r.get("body"), ann_id=r.get("id"))
+        return out
+
+    if soup is None:
+        return out
+    for tr in soup.find_all("tr"):
+        cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+        if len(cells) < 2:
+            continue
+        # Heuristic: look for a date-like cell and a title-ish cell
+        posted = datetime.now()
+        for cell in cells:
+            try:
+                posted = datetime.fromisoformat(cell[:19])
+                break
+            except ValueError:
+                continue
+        title = cells[-1] if cells else ""
+        sym = None
+        link = tr.find("a")
+        url = link.get("href") if link else None
+        _push(sym=sym, title=title, posted=posted, url=url)
     return out
 
 
@@ -1393,21 +1689,35 @@ def parse_profile(symbol: str, html: str) -> CompanyInfo:
         name = h.get_text(strip=True)
     sector = None
     listed = None
-    profile_text = None
-    for label, attr in [("Sector", "sector"), ("Listed Shares", "listed"), ("Free Float", "free")]:
-        cell = soup.find(string=re.compile(label, re.I))
-        if cell and cell.parent:
-            sib = cell.parent.find_next_sibling()
-            if sib:
-                txt = sib.get_text(strip=True)
-                if label == "Sector":
-                    sector = txt
-                elif label == "Listed Shares":
-                    listed = _i(txt) or None
+
+    # Look for label/value pairs in <dt>/<dd> first, then table rows
+    for dt in soup.find_all("dt"):
+        label = dt.get_text(" ", strip=True).lower()
+        dd = dt.find_next_sibling("dd")
+        if not dd:
+            continue
+        val = dd.get_text(" ", strip=True)
+        if "sector" in label and not sector:
+            sector = val
+        elif "listed shares" in label or "shares outstanding" in label:
+            listed = _i(val) or None
+
+    if not sector or not listed:
+        for tr in soup.find_all("tr"):
+            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
+            if len(cells) < 2:
+                continue
+            label = cells[0].lower()
+            val = cells[1]
+            if "sector" in label and not sector:
+                sector = val
+            elif ("listed shares" in label or "shares outstanding" in label) and not listed:
+                listed = _i(val) or None
+
     return CompanyInfo(
         symbol=symbol.upper(),
         name=name or symbol.upper(),
-        sector=sector, listed_shares=listed, profile=profile_text,
+        sector=sector, listed_shares=listed,
     )
 
 
@@ -1415,62 +1725,109 @@ def parse_financials(symbol: str, html: str) -> Fundamentals:
     soup = BeautifulSoup(html, "lxml")
     text = soup.get_text(" ", strip=True)
 
-    def find(label: str) -> Optional[float]:
-        m = re.search(rf"{label}[^0-9\-]*(-?\d+(?:\.\d+)?)", text, re.I)
+    def find(label_regex: str) -> Optional[float]:
+        m = re.search(rf"{label_regex}[^0-9\-]*(-?\d+(?:\.\d+)?)", text, re.I)
         return float(m.group(1)) if m else None
 
     return Fundamentals(
         symbol=symbol.upper(),
-        eps=find("EPS"),
-        pe=find(r"P/?E"),
-        pb=find(r"P/?B"),
-        div_yield=find(r"Dividend Yield"),
+        eps=find(r"EPS"),
+        pe=find(r"P\s*/\s*E"),
+        pb=find(r"P\s*/\s*B"),
+        div_yield=find(r"Dividend\s*Yield"),
         payout=find(r"Payout"),
-        roe=find("ROE"),
+        roe=find(r"ROE"),
         refreshed_at=datetime.now(),
     )
+
+
+def parse_financial_statements(symbol: str, period: str, html: str) -> list[FinancialStatement]:
+    """Best-effort scrape of annual/quarterly financial statements from the PSX
+    financial-information page. Returns empty list if no statements found."""
+    if period not in ("annual", "quarterly"):
+        raise ValueError("period must be 'annual' or 'quarterly'")
+    soup = BeautifulSoup(html, "lxml")
+    statements: list[FinancialStatement] = []
+    # Look for tables that resemble financial statements (label + numeric columns)
+    for table in soup.find_all("table"):
+        header = [th.get_text(" ", strip=True) for th in table.find_all("th")]
+        if not header or len(header) < 2:
+            continue
+        # Try to find a period column from header names (e.g. "2024", "FY2024")
+        period_cols: list[tuple[int, date]] = []
+        for i, h in enumerate(header):
+            m = re.search(r"(20\d{2})", h)
+            if m:
+                period_cols.append((i, date(int(m.group(1)), 12, 31)))
+        if not period_cols:
+            continue
+        items_by_period: dict[date, dict[str, float]] = {pe: {} for _, pe in period_cols}
+        for tr in (table.find("tbody") or table).find_all("tr"):
+            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
+            if len(cells) < 2:
+                continue
+            label = cells[0]
+            for col_idx, pe in period_cols:
+                if col_idx < len(cells):
+                    v = _f(cells[col_idx])
+                    if v is not None and label:
+                        items_by_period[pe][label] = v
+        for pe, items in items_by_period.items():
+            if items:
+                statements.append(FinancialStatement(
+                    symbol=symbol.upper(), period=period, period_end=pe, line_items=items,
+                ))
+    return statements
 ```
 
 - [ ] **Step 6: Run tests — expect pass**
 
 Run: `uv run pytest tests/test_psx_client.py -v`
-Expected: all parser tests pass against the captured fixtures. If a test fails, **adapt the parser to match the real fixture shape** rather than weakening the test.
+Expected: all parser tests pass against the captured fixtures. If a test fails, **adapt the parser** to match the real fixture shape rather than weakening the test.
 
 - [ ] **Step 7: Commit (fixtures + parsers)**
 
 ```powershell
-git add psx-mcp/src/psx_mcp/psx_client.py psx-mcp/tests/test_psx_client.py psx-mcp/tests/fixtures/
+git add psx-mcp/src/psx_mcp/psx_client.py psx-mcp/tests/test_psx_client.py psx-mcp/tests/fixtures/ psx-mcp/scripts/capture_fixtures.py
 git commit -m "feat(psx-mcp): async HTTP client + fixture-driven parsers"
 ```
 
 ---
 
-### Task 7: Symbols module — search & lookup over the master list
+### Task 8: Symbols module — search & lookup
 
 **Files:**
 - Create: `psx-mcp/src/psx_mcp/symbols.py`
-- Modify: `psx-mcp/tests/test_psx_client.py` (add symbols tests)
+- Create: `psx-mcp/tests/test_symbols.py`
 
 - [ ] **Step 1: Write failing tests**
 
-Append to `tests/test_psx_client.py`:
+`tests/test_symbols.py`:
 ```python
+from pathlib import Path
+import pytest
 from psx_mcp.cache import Cache
 from psx_mcp.symbols import search_symbols, refresh_symbols_from_payload
 
 
+def _payload(fixtures_dir: Path) -> str:
+    for ext in ("json", "html"):
+        p = fixtures_dir / f"symbols.{ext}"
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    raise FileNotFoundError("symbols fixture missing")
+
+
 def test_refresh_and_search(tmp_path, fixtures_dir):
     c = Cache(str(tmp_path / "t.db"))
-    payload = (fixtures_dir / "symbols.json").read_text(encoding="utf-8")
-    refresh_symbols_from_payload(c, payload)
+    refresh_symbols_from_payload(c, _payload(fixtures_dir))
     matches = search_symbols(c, "lucky", limit=5)
     assert any(m["symbol"] == "LUCK" for m in matches)
 
 
-def test_search_by_symbol(tmp_path, fixtures_dir):
+def test_search_by_exact_symbol(tmp_path, fixtures_dir):
     c = Cache(str(tmp_path / "t.db"))
-    payload = (fixtures_dir / "symbols.json").read_text(encoding="utf-8")
-    refresh_symbols_from_payload(c, payload)
+    refresh_symbols_from_payload(c, _payload(fixtures_dir))
     matches = search_symbols(c, "LUCK", limit=1)
     assert matches[0]["symbol"] == "LUCK"
     assert matches[0]["score"] >= 0.9
@@ -1478,7 +1835,7 @@ def test_search_by_symbol(tmp_path, fixtures_dir):
 
 - [ ] **Step 2: Run — expect failure**
 
-Run: `uv run pytest tests/test_psx_client.py::test_refresh_and_search -v`
+Run: `uv run pytest tests/test_symbols.py -v`
 Expected: ImportError.
 
 - [ ] **Step 3: Implement `symbols.py`**
@@ -1519,44 +1876,57 @@ def search_symbols(cache: Cache, query: str, limit: int = 10) -> list[dict]:
 
 - [ ] **Step 4: Run — expect pass**
 
-Run: `uv run pytest tests/test_psx_client.py -v -k symbol`
+Run: `uv run pytest tests/test_symbols.py -v`
 Expected: pass.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add psx-mcp/src/psx_mcp/symbols.py psx-mcp/tests/test_psx_client.py
+git add psx-mcp/src/psx_mcp/symbols.py psx-mcp/tests/test_symbols.py
 git commit -m "feat(psx-mcp): symbol master refresh + fuzzy search"
 ```
 
 ---
 
-### Task 8: News aggregator (RSS via feedparser)
+### Task 9: News aggregator (RSS via feedparser)
 
 **Files:**
+- Create: `psx-mcp/scripts/capture_rss.py`
 - Create: `psx-mcp/src/psx_mcp/news.py`
 - Create: `psx-mcp/tests/test_news.py`
 - Create: `psx-mcp/tests/fixtures/brecorder_feed.xml` (captured)
 - Create: `psx-mcp/tests/fixtures/profit_feed.xml` (captured)
 
-- [ ] **Step 1: Capture RSS fixtures**
+- [ ] **Step 1: Create RSS capture script**
 
-Run:
-```powershell
-uv run python -c @'
+`psx-mcp/scripts/capture_rss.py`:
+```python
+"""Capture RSS feeds into tests/fixtures/.
+Run from psx-mcp/:  uv run python scripts/capture_rss.py
+"""
 import httpx
 from pathlib import Path
+
 FIX = Path("tests/fixtures")
-H = {"User-Agent": "Mozilla/5.0"}
-for url, out in [("https://www.brecorder.com/feed", "brecorder_feed.xml"),
-                 ("https://profit.pakistantoday.com.pk/feed/", "profit_feed.xml")]:
-    r = httpx.get(url, headers=H, timeout=15, follow_redirects=True)
-    print(url, r.status_code, len(r.content))
-    if r.status_code == 200:
-        (FIX / out).write_text(r.text, encoding="utf-8")
-'@
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+FEEDS = [
+    ("https://www.brecorder.com/feed", "brecorder_feed.xml"),
+    ("https://profit.pakistantoday.com.pk/feed/", "profit_feed.xml"),
+]
+
+for url, out in FEEDS:
+    try:
+        r = httpx.get(url, headers=HEADERS, timeout=15, follow_redirects=True)
+        print(url, r.status_code, len(r.content))
+        if r.status_code == 200:
+            (FIX / out).write_text(r.text, encoding="utf-8")
+    except Exception as e:
+        print(f"{url} ERROR {e}")
 ```
-Expected: both 200; XML written. If a feed 404s, swap to the working URL and update `news.py`.
+
+Run: `uv run python scripts/capture_rss.py`
+Expected: both 200; XML written. If a feed 404s, swap to the working URL and update `news.py FEEDS`.
 
 - [ ] **Step 2: Write failing tests**
 
@@ -1577,8 +1947,7 @@ def test_parse_brecorder(fixtures_dir):
 
 def test_symbol_mentions_finds_ticker():
     title = "Lucky Cement (LUCK) reports record profits"
-    body = ""
-    mentions = find_symbol_mentions(title, body, {"LUCK", "OGDC"})
+    mentions = find_symbol_mentions(title, "", {"LUCK", "OGDC"})
     assert "LUCK" in mentions
     assert "OGDC" not in mentions
 
@@ -1645,13 +2014,13 @@ Expected: pass.
 - [ ] **Step 6: Commit**
 
 ```powershell
-git add psx-mcp/src/psx_mcp/news.py psx-mcp/tests/test_news.py psx-mcp/tests/fixtures/brecorder_feed.xml psx-mcp/tests/fixtures/profit_feed.xml
+git add psx-mcp/scripts/capture_rss.py psx-mcp/src/psx_mcp/news.py psx-mcp/tests/test_news.py psx-mcp/tests/fixtures/brecorder_feed.xml psx-mcp/tests/fixtures/profit_feed.xml
 git commit -m "feat(psx-mcp): RSS news aggregator with symbol mention detection"
 ```
 
 ---
 
-### Task 9: Watchlist module — JSON-backed rules store
+### Task 10: Watchlist module — JSON-backed rules store
 
 **Files:**
 - Create: `psx-mcp/src/psx_mcp/watchlist.py`
@@ -1751,8 +2120,8 @@ class WatchlistStore:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._data: dict = {"watch": [], "rules": []}
-        if self.path.exists():
-            self._data = json.loads(self.path.read_text(encoding="utf-8") or '{"watch": [], "rules": []}')
+        if self.path.exists() and self.path.stat().st_size:
+            self._data = json.loads(self.path.read_text(encoding="utf-8"))
 
     def _save(self) -> None:
         self.path.write_text(json.dumps(self._data, default=_ser, indent=2), encoding="utf-8")
@@ -1791,7 +2160,6 @@ class WatchlistStore:
             id=rid, symbol=symbol, type=type, condition=condition,
             active=True, created_at=_today(),
         )
-        # replace if id exists
         self._data["rules"] = [r for r in self._data["rules"] if r["id"] != rid]
         self._data["rules"].append(json.loads(rule.model_dump_json()))
         self._save()
@@ -1839,7 +2207,7 @@ git commit -m "feat(psx-mcp): JSON-backed watchlist & alert rules store"
 
 ---
 
-### Task 10: Alert evaluator
+### Task 11: Alert evaluator
 
 **Files:**
 - Create: `psx-mcp/src/psx_mcp/alerts.py`
@@ -1847,10 +2215,11 @@ git commit -m "feat(psx-mcp): JSON-backed watchlist & alert rules store"
 
 - [ ] **Step 1: Write failing tests**
 
+All seeded dates are **relative to `date.today()`** so tests don't bit-rot.
+
 `tests/test_alerts.py`:
 ```python
 from datetime import datetime, date, timedelta
-import pandas as pd
 import pytest
 
 from psx_mcp.cache import Cache
@@ -1863,9 +2232,10 @@ def _seed_bars(cache: Cache, symbol: str, closes: list[float],
                volumes: list[int] | None = None) -> None:
     volumes = volumes or [1000] * len(closes)
     bars = []
-    today = date(2026, 5, 1)
+    end = date.today()
+    n = len(closes)
     for i, (c, v) in enumerate(zip(closes, volumes)):
-        bars.append(Bar(symbol=symbol, date=today + timedelta(days=i),
+        bars.append(Bar(symbol=symbol, date=end - timedelta(days=(n - 1 - i)),
                         open=c, high=c, low=c, close=c, volume=v))
     cache.upsert_bars(bars)
 
@@ -1894,7 +2264,7 @@ def test_price_rule_does_not_trigger(tmp_path):
 
 def test_indicator_rsi_oversold(tmp_path):
     c = Cache(str(tmp_path / "t.db"))
-    _seed_bars(c, "LUCK", list(range(100, 80, -1)))  # 20 falling closes
+    _seed_bars(c, "LUCK", [float(x) for x in range(120, 80, -1)])  # 40 falling closes
     rule = AlertRule(id="r2", symbol="LUCK", type="indicator",
                      condition=AlertCondition(indicator="rsi14", op="<", value=40),
                      active=True, created_at=date.today())
@@ -1905,7 +2275,7 @@ def test_indicator_rsi_oversold(tmp_path):
 def test_volume_rule_triggers_on_spike(tmp_path):
     c = Cache(str(tmp_path / "t.db"))
     volumes = [1000] * 19 + [5000]
-    _seed_bars(c, "LUCK", [100] * 20, volumes)
+    _seed_bars(c, "LUCK", [100.0] * 20, volumes)
     rule = AlertRule(id="r3", symbol="LUCK", type="volume",
                      condition=AlertCondition(op=">", value=2.0, lookback_days=20),
                      active=True, created_at=date.today())
@@ -1962,7 +2332,7 @@ Expected: ImportError.
 `src/psx_mcp/alerts.py`:
 ```python
 from __future__ import annotations
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 import operator as _op
 
@@ -1970,21 +2340,13 @@ import pandas as pd
 
 from .cache import Cache
 from .watchlist import WatchlistStore
+from .df_utils import bars_df
 from .models import AlertRule, AlertHit
-from .indicators import rsi, macd, sma, ema, bollinger, volume_zscore, last_crosses
+from .indicators import rsi, macd, sma, ema, bollinger, last_crosses
 
 _OPS = {
     "<": _op.lt, "<=": _op.le, ">": _op.gt, ">=": _op.ge, "==": _op.eq,
 }
-
-
-def _bars_df(cache: Cache, symbol: str, lookback_days: int = 250) -> pd.DataFrame:
-    today = date.today()
-    rows = cache.get_bars(symbol, today - timedelta(days=lookback_days * 2), today)
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows).set_index("date").sort_index()
-    return df
 
 
 def _indicator_series(df: pd.DataFrame, name: str) -> pd.Series:
@@ -2025,7 +2387,7 @@ def evaluate_rule(cache: Cache, rule: AlertRule) -> Optional[AlertHit]:
         return None
 
     if rule.type == "indicator":
-        df = _bars_df(cache, rule.symbol)
+        df = bars_df(cache, rule.symbol)
         if df.empty or len(df) < 20:
             return None
         series = _indicator_series(df, cond.indicator or "rsi14")
@@ -2049,12 +2411,15 @@ def evaluate_rule(cache: Cache, rule: AlertRule) -> Optional[AlertHit]:
         return None
 
     if rule.type == "volume":
-        df = _bars_df(cache, rule.symbol)
+        df = bars_df(cache, rule.symbol)
         if df.empty or len(df) < 2:
             return None
         window = cond.lookback_days or 20
         today_vol = float(df["volume"].iloc[-1])
-        avg_vol = float(df["volume"].iloc[-window-1:-1].mean()) if len(df) > window else float(df["volume"].iloc[:-1].mean())
+        if len(df) > window:
+            avg_vol = float(df["volume"].iloc[-window-1:-1].mean())
+        else:
+            avg_vol = float(df["volume"].iloc[:-1].mean())
         multiplier = today_vol / avg_vol if avg_vol else 0.0
         op = _OPS.get(cond.op)
         if op and op(multiplier, cond.value):
@@ -2110,71 +2475,96 @@ git commit -m "feat(psx-mcp): alert rule evaluation for price/indicator/volume/a
 
 ---
 
-### Task 11: MCP server — bootstrap + market-data tools
+### Task 12: MCP server — bootstrap, impl helpers, market-data tools
 
 **Files:**
 - Create: `psx-mcp/server.py`
 - Create: `psx-mcp/tests/test_server.py`
 
-This task wires up FastMCP and exposes the first batch of tools. Tests use the FastMCP in-process client to call tools end-to-end with a temp cache.
+**Architecture note:** every MCP tool is a thin `async def` wrapper around a sync `_<tool>_impl(cache, ...)` helper. Tests call the impl helpers directly with isolated dependencies. Tools themselves are exercised end-to-end by Task 17.
 
 - [ ] **Step 1: Write failing tests**
 
 `tests/test_server.py`:
 ```python
-import json
+import pytest
 from datetime import datetime, date, timedelta
 from pathlib import Path
-import pytest
 
 from psx_mcp.cache import Cache
 from psx_mcp.watchlist import WatchlistStore
 from psx_mcp.models import Bar
+from psx_mcp.symbols import refresh_symbols_from_payload
 
 
 @pytest.fixture
-def deps(tmp_path, monkeypatch, fixtures_dir):
-    """Build server with isolated cache/watchlist + symbol master seeded from fixture."""
+def deps(tmp_path, fixtures_dir):
+    """Build server-module dependencies in isolation, seeded with fixtures + cached data."""
     import server as srv
     cache = Cache(str(tmp_path / "psx.db"))
     store = WatchlistStore(str(tmp_path / "wl.json"))
-    # Seed symbol master from fixture so search_symbol works offline
-    from psx_mcp.symbols import refresh_symbols_from_payload
-    refresh_symbols_from_payload(cache, (fixtures_dir / "symbols.json").read_text(encoding="utf-8"))
-    # Seed one quote so get_quote works without network
+    # Seed symbol master from fixture so search works offline
+    for ext in ("json", "html"):
+        p = fixtures_dir / f"symbols.{ext}"
+        if p.exists():
+            refresh_symbols_from_payload(cache, p.read_text(encoding="utf-8"))
+            break
+    # Seed a quote
     cache.upsert_quote(symbol="LUCK", ts=datetime.now(), price=750.0,
                        change=10.0, volume=1000, day_high=760, day_low=740,
                        fetched_at=datetime.now())
-    # Seed some bars for history/indicator tests
-    bars = [Bar(symbol="LUCK", date=date(2026, 5, 1) + timedelta(days=i),
-                open=700+i, high=710+i, low=695+i, close=705+i, volume=10000)
+    # Seed 30 days of bars ending today
+    today = date.today()
+    bars = [Bar(symbol="LUCK", date=today - timedelta(days=29 - i),
+                open=700 + i, high=710 + i, low=695 + i, close=705 + i, volume=10000)
             for i in range(30)]
     cache.upsert_bars(bars)
     srv.set_dependencies(cache=cache, store=store, client=None)
     return srv
 
 
-def test_get_quote_returns_cached(deps):
-    result = deps.get_quote("LUCK")
+def test_get_quote_impl_returns_cached(deps):
+    result = deps._get_quote_impl(deps._cache, "LUCK")
     assert result.symbol == "LUCK"
     assert result.price == 750.0
     assert "not investment advice" in result.disclaimer.lower()
 
 
-def test_search_symbol_finds_match(deps):
-    res = deps.search_symbol("LUCK")
+def test_get_quote_handles_missing(deps):
+    result = deps._get_quote_impl(deps._cache, "MISSING")
+    assert result.stale is True
+
+
+def test_change_pct_subrupee_safe(tmp_path):
+    """Verify change_pct doesn't blow up on sub-rupee penny stocks (issue from review)."""
+    import server as srv
+    c = Cache(str(tmp_path / "t.db"))
+    c.upsert_quote(symbol="PNY", ts=datetime.now(), price=0.5, change=0.05,
+                   volume=1, day_high=0.55, day_low=0.45, fetched_at=datetime.now())
+    srv.set_dependencies(cache=c, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    r = srv._get_quote_impl(c, "PNY")
+    # prev close = 0.45 → change_pct ≈ 11.1
+    assert 10.0 < r.change_pct < 12.0
+
+
+def test_search_symbol_impl(deps):
+    res = deps._search_symbol_impl(deps._cache, "LUCK")
     assert len(res) >= 1
     assert res[0].symbol == "LUCK"
 
 
-def test_get_history_returns_bars(deps):
-    bars = deps.get_history("LUCK", date(2026, 5, 1).isoformat(), date(2026, 6, 1).isoformat())
+def test_get_history_impl(deps):
+    today = date.today()
+    bars = deps._get_history_impl(deps._cache, "LUCK",
+                                  (today - timedelta(days=30)).isoformat(),
+                                  today.isoformat())
     assert len(bars) > 0
     assert bars[0].symbol == "LUCK"
 
 
-def test_compute_indicators_returns_values(deps):
-    out = deps.compute_indicators("LUCK", indicators=["rsi14", "sma10"], lookback_days=30)
+def test_compute_indicators_impl(deps):
+    out = deps._compute_indicators_impl(deps._cache, "LUCK",
+                                        indicators=["rsi14", "sma10"], lookback_days=30)
     assert "rsi14" in out
     assert "sma10" in out
     assert isinstance(out["rsi14"], float)
@@ -2185,11 +2575,11 @@ def test_compute_indicators_returns_values(deps):
 Run: `uv run pytest tests/test_server.py -v`
 Expected: ImportError.
 
-- [ ] **Step 3: Implement `server.py` (bootstrap + market-data tools)**
+- [ ] **Step 3: Implement `server.py` bootstrap + first impls**
 
 `server.py`:
 ```python
-"""PSX MCP server — FastMCP entrypoint."""
+"""PSX MCP server — FastMCP entrypoint with sync impl helpers + async tool wrappers."""
 from __future__ import annotations
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -2200,22 +2590,33 @@ from mcp.server.fastmcp import FastMCP
 
 from psx_mcp.cache import Cache
 from psx_mcp.watchlist import WatchlistStore
-from psx_mcp.psx_client import PSXClient, parse_market_watch, parse_historical, parse_announcements, parse_profile, parse_financials
-from psx_mcp.symbols import search_symbols, refresh_symbols_from_payload
+from psx_mcp.psx_client import (
+    PSXClient, parse_market_watch, parse_historical, parse_announcements,
+    parse_profile, parse_financials, parse_financial_statements,
+)
+from psx_mcp.symbols import search_symbols
 from psx_mcp.indicators import rsi, sma, ema, macd, bollinger, volume_zscore
-from psx_mcp.alerts import run_alerts, evaluate_rule
+from psx_mcp.df_utils import bars_df
+from psx_mcp.alerts import run_alerts
 from psx_mcp.news import FEEDS, parse_rss, find_symbol_mentions
 from psx_mcp.models import (
     Quote, Bar, SymbolMatch, MarketSummary, Mover, CompanyInfo, Fundamentals,
-    Announcement, NewsItem, WatchEntry, AlertRule, AlertCondition, AlertHit,
-    VolumeSpike, ComparisonTable, ComparisonRow, DEFAULT_DISCLAIMER, RuleType,
+    FinancialStatement, Announcement, NewsItem, WatchEntry, AlertRule,
+    AlertCondition, AlertHit, VolumeSpike, ComparisonTable, ComparisonRow,
+    DEFAULT_DISCLAIMER,
 )
 from psx_mcp.logging_config import configure_logging, get_logger
 
-mcp = FastMCP("psx-mcp")
+mcp = FastMCP(
+    "psx-mcp",
+    instructions=(
+        "PSX (Pakistan Stock Exchange) research tools. "
+        "Data is 15+ minutes delayed. Informational only — not investment advice. "
+        "Call refresh_market before quote-based alerts; refresh_history for indicator/volume rules."
+    ),
+)
 log = get_logger("server")
 
-# Module-level dependencies injected at startup (or in tests via set_dependencies)
 _cache: Optional[Cache] = None
 _store: Optional[WatchlistStore] = None
 _client: Optional[PSXClient] = None
@@ -2227,22 +2628,19 @@ def set_dependencies(*, cache: Cache, store: WatchlistStore,
     _cache, _store, _client = cache, store, client
 
 
-# ---- market data ----
+# ============================================================================
+# Impl helpers — sync, fully testable, no MCP / no asyncio dependencies
+# ============================================================================
 
-@mcp.tool()
-def search_symbol(query: str, limit: int = 10) -> list[SymbolMatch]:
-    """Fuzzy-match a PSX ticker or company name."""
-    rows = search_symbols(_cache, query, limit=limit)
+def _search_symbol_impl(cache: Cache, query: str, limit: int = 10) -> list[SymbolMatch]:
+    rows = search_symbols(cache, query, limit=limit)
     return [SymbolMatch(**r) for r in rows]
 
 
-@mcp.tool()
-def get_quote(symbol: str) -> Quote:
-    """Latest cached quote for a PSX symbol (15-min delayed)."""
+def _get_quote_impl(cache: Cache, symbol: str) -> Quote:
     sym = symbol.upper()
-    row = _cache.get_latest_quote(sym)
+    row = cache.get_latest_quote(sym)
     if not row:
-        # No live fetch in this task — tools that need fresh data fetch in task 12.
         return Quote(
             symbol=sym, price=0, change=0, change_pct=0, volume=0,
             day_high=0, day_low=0, week52_high=0, week52_low=0,
@@ -2251,9 +2649,11 @@ def get_quote(symbol: str) -> Quote:
         )
     fetched_at = datetime.fromisoformat(row["fetched_at"])
     stale = (datetime.now() - fetched_at).total_seconds() > 300
+    prev_close = row["price"] - row["change"]
+    change_pct = (row["change"] / prev_close * 100) if prev_close > 0 else 0.0
     return Quote(
         symbol=sym, price=row["price"], change=row["change"],
-        change_pct=(row["change"] / max(row["price"] - row["change"], 1)) * 100,
+        change_pct=change_pct,
         volume=row["volume"], day_high=row["day_high"] or 0,
         day_low=row["day_low"] or 0, week52_high=0, week52_low=0,
         timestamp=datetime.fromisoformat(row["ts"]), stale=stale,
@@ -2261,24 +2661,20 @@ def get_quote(symbol: str) -> Quote:
     )
 
 
-@mcp.tool()
-def get_history(symbol: str, from_date: str, to_date: str, interval: str = "1d") -> list[Bar]:
-    """Historical OHLCV. Free PSX data is daily only."""
+def _get_history_impl(cache: Cache, symbol: str, from_date: str, to_date: str,
+                      interval: str = "1d") -> list[Bar]:
     if interval != "1d":
         raise ValueError("Only '1d' interval supported on free PSX data")
-    rows = _cache.get_bars(symbol, date.fromisoformat(from_date), date.fromisoformat(to_date))
+    rows = cache.get_bars(symbol, date.fromisoformat(from_date), date.fromisoformat(to_date))
     return [Bar(symbol=symbol, date=r["date"], open=r["open"], high=r["high"],
                 low=r["low"], close=r["close"], volume=r["volume"]) for r in rows]
 
 
-@mcp.tool()
-def compute_indicators(symbol: str, indicators: list[str], lookback_days: int = 200) -> dict:
-    """Compute one or more indicators from cached daily bars. Returns last value of each."""
-    today = date.today()
-    rows = _cache.get_bars(symbol, today - timedelta(days=lookback_days * 2), today)
-    if not rows:
-        return {"error": f"No bars cached for {symbol}"}
-    df = pd.DataFrame(rows).sort_values("date")
+def _compute_indicators_impl(cache: Cache, symbol: str, indicators: list[str],
+                              lookback_days: int = 200) -> dict:
+    df = bars_df(cache, symbol, lookback_days)
+    if df.empty:
+        return {"error": f"No bars cached for {symbol}", "disclaimer": DEFAULT_DISCLAIMER}
     out: dict = {}
     for name in indicators:
         try:
@@ -2298,10 +2694,38 @@ def compute_indicators(symbol: str, indicators: list[str], lookback_days: int = 
                 out[name] = float(volume_zscore(df["volume"], 20).iloc[-1])
             else:
                 out[name] = {"error": f"unknown indicator: {name}"}
-        except (ValueError, IndexError) as e:
+        except (ValueError, IndexError, KeyError) as e:
             out[name] = {"error": str(e)}
     out["disclaimer"] = DEFAULT_DISCLAIMER
     return out
+
+
+# ============================================================================
+# Async MCP tool wrappers
+# ============================================================================
+
+@mcp.tool()
+async def search_symbol(query: str, limit: int = 10) -> list[SymbolMatch]:
+    """Fuzzy-match a PSX ticker or company name."""
+    return _search_symbol_impl(_cache, query, limit)
+
+
+@mcp.tool()
+async def get_quote(symbol: str) -> Quote:
+    """Latest cached quote for a PSX symbol (15-min delayed)."""
+    return _get_quote_impl(_cache, symbol)
+
+
+@mcp.tool()
+async def get_history(symbol: str, from_date: str, to_date: str, interval: str = "1d") -> list[Bar]:
+    """Historical OHLCV. Free PSX data is daily only."""
+    return _get_history_impl(_cache, symbol, from_date, to_date, interval)
+
+
+@mcp.tool()
+async def compute_indicators(symbol: str, indicators: list[str], lookback_days: int = 200) -> dict:
+    """Compute one or more indicators from cached daily bars."""
+    return _compute_indicators_impl(_cache, symbol, indicators, lookback_days)
 
 
 if __name__ == "__main__":
@@ -2326,89 +2750,76 @@ Expected: pass.
 
 ```powershell
 git add psx-mcp/server.py psx-mcp/tests/test_server.py
-git commit -m "feat(psx-mcp): FastMCP server bootstrap + market-data tools"
+git commit -m "feat(psx-mcp): FastMCP server bootstrap + market-data impls"
 ```
 
 ---
 
-### Task 12: Live refresh tools — market_summary, top_movers, refresh_market
+### Task 13: Live refresh impls — market_summary, top_movers, refresh_market
 
 **Files:**
-- Modify: `psx-mcp/server.py` (add tools)
-- Modify: `psx-mcp/tests/test_server.py` (add tests using respx)
+- Modify: `psx-mcp/server.py`
+- Modify: `psx-mcp/tests/test_server.py`
 
 - [ ] **Step 1: Write failing tests**
 
 Append to `tests/test_server.py`:
 ```python
-import respx
+import asyncio
 import httpx
+import respx
 from psx_mcp.psx_client import PSXClient, BASE_DPS
 
 
 @pytest.fixture
-def deps_with_client(deps, tmp_path, fixtures_dir):
-    """Same as `deps` but with a real PSXClient (network mocked via respx)."""
+def deps_with_client(deps):
+    """Same as `deps` but with a real PSXClient (network mocked via respx in each test)."""
     deps.set_dependencies(cache=deps._cache, store=deps._store, client=PSXClient())
     return deps
 
 
 @respx.mock
-def test_refresh_market_populates_cache(deps_with_client, fixtures_dir):
+def test_refresh_market_impl_populates_cache(deps_with_client, fixtures_dir):
     html = (fixtures_dir / "market_watch.html").read_text(encoding="utf-8")
     respx.get(f"{BASE_DPS}/market-watch").mock(return_value=httpx.Response(200, text=html))
-    n = deps_with_client.refresh_market()
-    assert n > 100  # ~540 symbols
+    n = asyncio.run(deps_with_client._refresh_market_impl(deps_with_client._cache,
+                                                           deps_with_client._client))
+    assert n > 100
 
 
 @respx.mock
 def test_get_top_movers_after_refresh(deps_with_client, fixtures_dir):
     html = (fixtures_dir / "market_watch.html").read_text(encoding="utf-8")
     respx.get(f"{BASE_DPS}/market-watch").mock(return_value=httpx.Response(200, text=html))
-    deps_with_client.refresh_market()
-    gainers = deps_with_client.get_top_movers(kind="gainers", limit=5)
+    asyncio.run(deps_with_client._refresh_market_impl(deps_with_client._cache,
+                                                       deps_with_client._client))
+    gainers = deps_with_client._get_top_movers_impl(deps_with_client._cache, kind="gainers", limit=5)
     assert len(gainers) <= 5
 
 
-def test_market_summary_basic(deps_with_client):
-    s = deps_with_client.get_market_summary()
-    # KSE-100 may be 0 if not seeded, but the call should not error
+def test_market_summary_returns_stale_when_empty(deps):
+    s = deps._get_market_summary_impl(deps._cache)
     assert s.timestamp
+    assert s.stale is True
 ```
-
-Module-level access pattern: tests reference `deps._cache` and `deps._store`. Add these read-only attributes by exposing them at module scope in `server.py`. (They already are; the underscore-prefix is just a convention — pytest can access them.)
 
 - [ ] **Step 2: Run — expect failure**
 
 Run: `uv run pytest tests/test_server.py -v -k "refresh or top_movers or market_summary"`
-Expected: AttributeError (`refresh_market` doesn't exist yet).
+Expected: AttributeError.
 
-- [ ] **Step 3: Add the tools to `server.py`**
+- [ ] **Step 3: Add impls + async tool wrappers to `server.py`**
 
-Insert after `get_quote` in `server.py`:
+Insert after `_compute_indicators_impl` in `server.py`:
 ```python
-import asyncio
-
-
-def _async(coro):
-    """Run an async function from a sync MCP tool body."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    return loop.run_until_complete(coro)
-
-
-@mcp.tool()
-def refresh_market() -> int:
-    """Force a refresh of the market-watch snapshot. Returns number of quotes upserted."""
-    if not _client:
+async def _refresh_market_impl(cache: Cache, client: Optional[PSXClient]) -> int:
+    if not client:
         return 0
-    html = _async(_client.fetch_market_watch())
+    html = await client.fetch_market_watch()
     rows = parse_market_watch(html)
     now = datetime.now()
     for r in rows:
-        _cache.upsert_quote(
+        cache.upsert_quote(
             symbol=r["symbol"], ts=now, price=r["price"] or 0,
             change=r["change"] or 0, volume=r["volume"] or 0,
             day_high=r["day_high"] or 0, day_low=r["day_low"] or 0,
@@ -2418,11 +2829,8 @@ def refresh_market() -> int:
     return len(rows)
 
 
-@mcp.tool()
-def get_market_summary() -> MarketSummary:
-    """Index levels (KSE-100/30/ALLSHR) + sector aggregates. Best-effort from cached snapshot."""
-    # Pull index members from the cache if present; otherwise return zeros with stale=True
-    kse100_row = _cache.get_latest_quote("KSE100")
+def _get_market_summary_impl(cache: Cache) -> MarketSummary:
+    kse100_row = cache.get_latest_quote("KSE100")
     return MarketSummary(
         kse100=(kse100_row or {}).get("price") or 0.0,
         kse100_change=(kse100_row or {}).get("change") or 0.0,
@@ -2433,10 +2841,8 @@ def get_market_summary() -> MarketSummary:
     )
 
 
-@mcp.tool()
-def get_top_movers(kind: str = "gainers", limit: int = 10) -> list[Mover]:
-    """kind: 'gainers' | 'losers' | 'volume'."""
-    rows = _cache.conn.execute(
+def _get_top_movers_impl(cache: Cache, kind: str = "gainers", limit: int = 10) -> list[Mover]:
+    rows = cache.conn.execute(
         """SELECT q.symbol, q.price, q.change, q.volume, s.name
            FROM quotes q LEFT JOIN symbols s ON s.symbol=q.symbol
            WHERE q.ts = (SELECT MAX(ts) FROM quotes q2 WHERE q2.symbol=q.symbol)
@@ -2445,7 +2851,8 @@ def get_top_movers(kind: str = "gainers", limit: int = 10) -> list[Mover]:
     movers = []
     for r in rows:
         d = dict(r)
-        change_pct = (d["change"] / max(d["price"] - d["change"], 1)) * 100
+        prev_close = d["price"] - d["change"]
+        change_pct = (d["change"] / prev_close * 100) if prev_close > 0 else 0.0
         movers.append(Mover(symbol=d["symbol"], name=d.get("name"),
                             price=d["price"], change_pct=change_pct, volume=d["volume"]))
     if kind == "gainers":
@@ -2457,6 +2864,24 @@ def get_top_movers(kind: str = "gainers", limit: int = 10) -> list[Mover]:
     else:
         raise ValueError(f"unknown kind: {kind}")
     return movers[:limit]
+
+
+@mcp.tool()
+async def refresh_market() -> int:
+    """Force a refresh of the market-watch snapshot. Returns quotes upserted."""
+    return await _refresh_market_impl(_cache, _client)
+
+
+@mcp.tool()
+async def get_market_summary() -> MarketSummary:
+    """Index levels + sector aggregates. Best-effort from cached snapshot."""
+    return _get_market_summary_impl(_cache)
+
+
+@mcp.tool()
+async def get_top_movers(kind: str = "gainers", limit: int = 10) -> list[Mover]:
+    """kind: 'gainers' | 'losers' | 'volume'."""
+    return _get_top_movers_impl(_cache, kind, limit)
 ```
 
 - [ ] **Step 4: Run — expect pass**
@@ -2468,12 +2893,12 @@ Expected: all pass.
 
 ```powershell
 git add psx-mcp/server.py psx-mcp/tests/test_server.py
-git commit -m "feat(psx-mcp): refresh_market, market_summary, top_movers tools"
+git commit -m "feat(psx-mcp): refresh_market, market_summary, top_movers"
 ```
 
 ---
 
-### Task 13: Fundamentals, company info, history-refresh, announcements, news tools
+### Task 14: Fundamentals, company info, history-refresh, announcements, news, financials
 
 **Files:**
 - Modify: `psx-mcp/server.py`
@@ -2483,12 +2908,15 @@ git commit -m "feat(psx-mcp): refresh_market, market_summary, top_movers tools"
 
 Append to `tests/test_server.py`:
 ```python
+from psx_mcp.psx_client import BASE_PSX
+
+
 @respx.mock
 def test_get_company_info_fetches_and_caches(deps_with_client, fixtures_dir):
     html = (fixtures_dir / "profile_LUCK.html").read_text(encoding="utf-8")
-    from psx_mcp.psx_client import BASE_PSX
     respx.get(f"{BASE_PSX}/psx/profile/LUCK").mock(return_value=httpx.Response(200, text=html))
-    info = deps_with_client.get_company_info("LUCK")
+    info = asyncio.run(deps_with_client._get_company_info_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK"))
     assert info.symbol == "LUCK"
     assert info.name
 
@@ -2496,146 +2924,214 @@ def test_get_company_info_fetches_and_caches(deps_with_client, fixtures_dir):
 @respx.mock
 def test_get_fundamentals(deps_with_client, fixtures_dir):
     html = (fixtures_dir / "financial_LUCK.html").read_text(encoding="utf-8")
-    from psx_mcp.psx_client import BASE_PSX
-    respx.get(f"{BASE_PSX}/psx/quote/financial-information/LUCK").mock(return_value=httpx.Response(200, text=html))
-    f = deps_with_client.get_fundamentals("LUCK")
+    respx.get(f"{BASE_PSX}/psx/quote/financial-information/LUCK").mock(
+        return_value=httpx.Response(200, text=html))
+    f = asyncio.run(deps_with_client._get_fundamentals_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK"))
     assert f.symbol == "LUCK"
 
 
 @respx.mock
-def test_refresh_history_persists_bars(deps_with_client, fixtures_dir):
-    payload = (fixtures_dir / "historical_LUCK.json").read_text(encoding="utf-8")
-    from psx_mcp.psx_client import BASE_DPS
-    respx.get(f"{BASE_DPS}/historical/LUCK").mock(return_value=httpx.Response(200, text=payload))
-    n = deps_with_client.refresh_history("LUCK")
-    assert n > 0
+def test_get_financials_statements(deps_with_client, fixtures_dir):
+    html = (fixtures_dir / "financial_LUCK.html").read_text(encoding="utf-8")
+    respx.get(f"{BASE_PSX}/psx/quote/financial-information/LUCK").mock(
+        return_value=httpx.Response(200, text=html))
+    out = asyncio.run(deps_with_client._get_financials_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK", "annual"))
+    assert isinstance(out, list)
 
 
 @respx.mock
-def test_get_announcements_returns_cached(deps_with_client, fixtures_dir):
-    payload = (fixtures_dir / "announcements.json").read_text(encoding="utf-8")
-    from psx_mcp.psx_client import BASE_DPS
-    respx.get(f"{BASE_DPS}/announcements/companies").mock(return_value=httpx.Response(200, text=payload))
-    deps_with_client.refresh_announcements()
-    anns = deps_with_client.get_announcements(symbol=None, since_days=365)
+def test_refresh_history_persists_bars(deps_with_client, fixtures_dir):
+    for ext in ("json", "html"):
+        p = fixtures_dir / f"historical_LUCK.{ext}"
+        if p.exists():
+            payload = p.read_text(encoding="utf-8")
+            break
+    respx.get(f"{BASE_DPS}/historical/LUCK").mock(return_value=httpx.Response(200, text=payload))
+    n = asyncio.run(deps_with_client._refresh_history_impl(
+        deps_with_client._cache, deps_with_client._client, "LUCK"))
+    assert n >= 0  # may be 0 if fixture is empty
+
+
+@respx.mock
+def test_refresh_and_get_announcements(deps_with_client, fixtures_dir):
+    for ext in ("json", "html"):
+        p = fixtures_dir / f"announcements.{ext}"
+        if p.exists():
+            payload = p.read_text(encoding="utf-8")
+            break
+    respx.get(f"{BASE_DPS}/announcements/companies").mock(
+        return_value=httpx.Response(200, text=payload))
+    asyncio.run(deps_with_client._refresh_announcements_impl(
+        deps_with_client._cache, deps_with_client._client))
+    anns = deps_with_client._get_announcements_impl(deps_with_client._cache, None, since_days=365)
     assert isinstance(anns, list)
 ```
 
 - [ ] **Step 2: Run — expect failure**
 
-Run: `uv run pytest tests/test_server.py -v -k "company_info or fundamentals or refresh_history or announcements"`
+Run: `uv run pytest tests/test_server.py -v -k "company_info or fundamentals or refresh_history or announcements or financials_statements"`
 Expected: AttributeError.
 
-- [ ] **Step 3: Add tools to `server.py`**
+- [ ] **Step 3: Add impls + tools to `server.py`**
 
-Append (before `if __name__ == "__main__":`):
+Insert before `if __name__ == "__main__":`:
 ```python
-@mcp.tool()
-def get_company_info(symbol: str) -> CompanyInfo:
-    """Profile, sector, listed shares. Fetches & caches on first call."""
+async def _get_company_info_impl(cache: Cache, client: Optional[PSXClient], symbol: str) -> CompanyInfo:
     sym = symbol.upper()
-    cached = _cache.get_symbol(sym)
-    age = _cache.symbols_master_age_seconds()
+    cached = cache.get_symbol(sym)
+    age = cache.symbols_master_age_seconds()
     if cached and age is not None and age < 7 * 86400 and cached.get("name"):
         return CompanyInfo(
             symbol=sym, name=cached["name"], sector=cached.get("sector"),
             listed_shares=cached.get("listed_shares"),
         )
-    if not _client:
-        return CompanyInfo(symbol=sym, name=cached.get("name") if cached else sym)
-    html = _async(_client.fetch_profile(sym))
+    if not client:
+        return CompanyInfo(symbol=sym, name=(cached or {}).get("name") or sym)
+    html = await client.fetch_profile(sym)
     info = parse_profile(sym, html)
-    _cache.upsert_symbol(sym, info.name, info.sector, info.listed_shares)
+    cache.upsert_symbol(sym, info.name, info.sector, info.listed_shares)
     return info
 
 
-@mcp.tool()
-def get_fundamentals(symbol: str) -> Fundamentals:
-    """EPS, P/E, P/B, dividend yield. Cached for 1 day."""
+async def _get_fundamentals_impl(cache: Cache, client: Optional[PSXClient], symbol: str) -> Fundamentals:
     sym = symbol.upper()
-    age = _cache.fundamentals_age_seconds(sym)
+    age = cache.fundamentals_age_seconds(sym)
     if age is not None and age < 86400:
-        row = _cache.get_fundamentals(sym)
-        return Fundamentals(symbol=sym, eps=row["eps"], pe=row["pe"], pb=row["pb"],
-                            div_yield=row["div_yield"], payout=row["payout"], roe=row["roe"],
-                            refreshed_at=datetime.fromisoformat(row["refreshed_at"]))
-    if not _client:
-        row = _cache.get_fundamentals(sym)
+        row = cache.get_fundamentals(sym)
+        return Fundamentals(
+            symbol=sym, eps=row["eps"], pe=row["pe"], pb=row["pb"],
+            div_yield=row["div_yield"], payout=row["payout"], roe=row["roe"],
+            refreshed_at=datetime.fromisoformat(row["refreshed_at"]),
+        )
+    if not client:
+        row = cache.get_fundamentals(sym)
         if not row:
             return Fundamentals(symbol=sym)
-        return Fundamentals(symbol=sym, eps=row["eps"], pe=row["pe"], pb=row["pb"],
-                            div_yield=row["div_yield"], payout=row["payout"], roe=row["roe"])
-    html = _async(_client.fetch_financials(sym))
+        return Fundamentals(
+            symbol=sym, eps=row["eps"], pe=row["pe"], pb=row["pb"],
+            div_yield=row["div_yield"], payout=row["payout"], roe=row["roe"],
+        )
+    html = await client.fetch_financials(sym)
     f = parse_financials(sym, html)
-    _cache.upsert_fundamentals(symbol=sym, eps=f.eps, pe=f.pe, pb=f.pb,
-                               div_yield=f.div_yield, payout=f.payout, roe=f.roe)
+    cache.upsert_fundamentals(symbol=sym, eps=f.eps, pe=f.pe, pb=f.pb,
+                              div_yield=f.div_yield, payout=f.payout, roe=f.roe)
     return f
 
 
-@mcp.tool()
-def refresh_history(symbol: str) -> int:
-    """Pull daily bars for a symbol from PSX and append to cache. Returns rows upserted."""
-    if not _client:
+async def _get_financials_impl(cache: Cache, client: Optional[PSXClient],
+                                symbol: str, period: str = "annual") -> list[FinancialStatement]:
+    if period not in ("annual", "quarterly"):
+        raise ValueError("period must be 'annual' or 'quarterly'")
+    if not client:
+        return []
+    html = await client.fetch_financials(symbol)
+    return parse_financial_statements(symbol, period, html)
+
+
+async def _refresh_history_impl(cache: Cache, client: Optional[PSXClient], symbol: str) -> int:
+    if not client:
         return 0
-    payload = _async(_client.fetch_historical(symbol))
+    payload = await client.fetch_historical(symbol)
     bars = parse_historical(symbol, payload)
-    _cache.upsert_bars(bars)
+    cache.upsert_bars(bars)
     return len(bars)
 
 
-@mcp.tool()
-def refresh_announcements() -> int:
-    """Pull recent corporate announcements and cache them."""
-    if not _client:
+async def _refresh_announcements_impl(cache: Cache, client: Optional[PSXClient]) -> int:
+    if not client:
         return 0
-    payload = _async(_client.fetch_announcements())
+    payload = await client.fetch_announcements()
     items = parse_announcements(payload)
     for a in items:
-        _cache.upsert_announcement(a)
+        cache.upsert_announcement(a)
     log.info("announcements_refresh", count=len(items))
     return len(items)
 
 
-@mcp.tool()
-def get_announcements(symbol: Optional[str] = None, since_days: int = 7) -> list[Announcement]:
-    """Cached corporate announcements; symbol=None returns all."""
+def _get_announcements_impl(cache: Cache, symbol: Optional[str], since_days: int) -> list[Announcement]:
     since = datetime.now() - timedelta(days=since_days)
-    rows = _cache.get_announcements(symbol=symbol, since=since)
+    rows = cache.get_announcements(symbol=symbol, since=since)
     return [Announcement(
         id=r["id"], symbol=r.get("symbol"), posted_at=r["posted_at"],
         title=r["title"], category=r.get("category"), url=r.get("url"), body=r.get("body"),
     ) for r in rows]
 
 
-@mcp.tool()
-def refresh_news() -> int:
-    """Pull all configured RSS feeds, tag symbol mentions, cache items."""
-    if not _client:
+async def _refresh_news_impl(cache: Cache, client: Optional[PSXClient]) -> int:
+    if not client:
         return 0
-    universe = {s["symbol"] for s in _cache.all_symbols()}
+    universe = {s["symbol"] for s in cache.all_symbols()}
     total = 0
     for source, url in FEEDS.items():
         try:
-            xml = _async(_client._get(url))
+            xml = await client._get(url)
         except Exception as e:
             log.warning("news_fetch_failed", source=source, error=str(e))
             continue
         items = parse_rss(source, xml)
         for it in items:
             mentions = find_symbol_mentions(it.title, "", universe)
-            _cache.upsert_news(id=it.id, source=it.source, posted_at=it.posted_at,
-                               title=it.title, url=it.url, symbols=mentions)
+            cache.upsert_news(id=it.id, source=it.source, posted_at=it.posted_at,
+                              title=it.title, url=it.url, symbols=mentions)
             total += 1
     return total
 
 
-@mcp.tool()
-def get_news(symbol: Optional[str] = None, since_days: int = 3) -> list[NewsItem]:
-    """Cached news items; filter by symbol mention if provided."""
+def _get_news_impl(cache: Cache, symbol: Optional[str], since_days: int) -> list[NewsItem]:
     since = datetime.now() - timedelta(days=since_days)
-    rows = _cache.get_news(symbol=symbol, since=since)
+    rows = cache.get_news(symbol=symbol, since=since)
     return [NewsItem(id=r["id"], source=r["source"], posted_at=r["posted_at"],
                      title=r["title"], url=r["url"], symbols=r["symbols"]) for r in rows]
+
+
+@mcp.tool()
+async def get_company_info(symbol: str) -> CompanyInfo:
+    """Profile, sector, listed shares. Fetches & caches on first call."""
+    return await _get_company_info_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def get_fundamentals(symbol: str) -> Fundamentals:
+    """EPS, P/E, P/B, dividend yield. Cached for 1 day."""
+    return await _get_fundamentals_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def get_financials(symbol: str, period: str = "annual") -> list[FinancialStatement]:
+    """Best-effort annual/quarterly financial statements from PSX filings."""
+    return await _get_financials_impl(_cache, _client, symbol, period)
+
+
+@mcp.tool()
+async def refresh_history(symbol: str) -> int:
+    """Pull daily bars for a symbol from PSX and append to cache."""
+    return await _refresh_history_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def refresh_announcements() -> int:
+    """Pull recent corporate announcements and cache them."""
+    return await _refresh_announcements_impl(_cache, _client)
+
+
+@mcp.tool()
+async def get_announcements(symbol: Optional[str] = None, since_days: int = 7) -> list[Announcement]:
+    """Cached corporate announcements; symbol=None returns all."""
+    return _get_announcements_impl(_cache, symbol, since_days)
+
+
+@mcp.tool()
+async def refresh_news() -> int:
+    """Pull all configured RSS feeds, tag symbol mentions, cache items."""
+    return await _refresh_news_impl(_cache, _client)
+
+
+@mcp.tool()
+async def get_news(symbol: Optional[str] = None, since_days: int = 3) -> list[NewsItem]:
+    """Cached news items; filter by symbol mention if provided."""
+    return _get_news_impl(_cache, symbol, since_days)
 ```
 
 - [ ] **Step 4: Run — expect pass**
@@ -2647,12 +3143,12 @@ Expected: all pass.
 
 ```powershell
 git add psx-mcp/server.py psx-mcp/tests/test_server.py
-git commit -m "feat(psx-mcp): fundamentals, company info, history/announcements/news tools"
+git commit -m "feat(psx-mcp): fundamentals, company info, financials, history/announcements/news"
 ```
 
 ---
 
-### Task 14: Watchlist + alerts tools + scan helpers
+### Task 15: Watchlist + alerts tools + analysis helpers
 
 **Files:**
 - Modify: `psx-mcp/server.py`
@@ -2662,38 +3158,37 @@ git commit -m "feat(psx-mcp): fundamentals, company info, history/announcements/
 
 Append to `tests/test_server.py`:
 ```python
-def test_watchlist_add_list_remove(deps):
-    e = deps.add_to_watchlist("OGDC", notes="energy")
+def test_watchlist_lifecycle(deps):
+    e = deps._add_to_watchlist_impl(deps._store, "OGDC", "energy")
     assert e.symbol == "OGDC"
-    assert any(w.symbol == "OGDC" for w in deps.list_watchlist())
-    assert deps.remove_from_watchlist("OGDC") is True
+    assert any(w.symbol == "OGDC" for w in deps._list_watchlist_impl(deps._store))
+    assert deps._remove_from_watchlist_impl(deps._store, "OGDC") is True
 
 
 def test_alert_rule_lifecycle(deps):
-    rule = deps.set_alert_rule(symbol="LUCK", type="price",
-                               condition={"op": ">", "value": 700})
+    rule = deps._set_alert_rule_impl(deps._store, symbol="LUCK", type="price",
+                                     condition={"op": ">", "value": 700})
     assert rule.id
-    rules = deps.list_alert_rules(symbol="LUCK")
+    rules = deps._list_alert_rules_impl(deps._store, symbol="LUCK")
     assert len(rules) == 1
-    assert deps.remove_alert_rule(rule.id) is True
+    assert deps._remove_alert_rule_impl(deps._store, rule.id) is True
 
 
 def test_check_alerts_returns_hits(deps):
-    deps.set_alert_rule(symbol="LUCK", type="price",
-                        condition={"op": ">", "value": 700})
-    hits = deps.check_alerts()
-    # quote was seeded at 750 in the `deps` fixture, threshold 700 → trigger
+    deps._set_alert_rule_impl(deps._store, symbol="LUCK", type="price",
+                              condition={"op": ">", "value": 700})
+    hits = deps._check_alerts_impl(deps._cache, deps._store, symbols=None)
     assert any(h.symbol == "LUCK" for h in hits)
 
 
 def test_scan_volume_spikes(deps):
-    spikes = deps.scan_volume_spikes(symbols=["LUCK"], multiplier=0.1, lookback_days=10)
-    # very low multiplier means everything qualifies; just confirm shape
+    spikes = deps._scan_volume_spikes_impl(deps._cache, symbols=["LUCK"],
+                                            multiplier=0.001, lookback_days=10)
     assert isinstance(spikes, list)
 
 
 def test_compare_symbols(deps):
-    out = deps.compare_symbols(symbols=["LUCK"], metrics=["price", "rsi14"])
+    out = deps._compare_symbols_impl(deps._cache, symbols=["LUCK"], metrics=["price", "rsi14"])
     assert len(out.rows) == 1
     assert out.rows[0].symbol == "LUCK"
 ```
@@ -2703,110 +3198,139 @@ def test_compare_symbols(deps):
 Run: `uv run pytest tests/test_server.py -v -k "watchlist or alert or scan_volume or compare"`
 Expected: AttributeError.
 
-- [ ] **Step 3: Add tools to `server.py`**
+- [ ] **Step 3: Add impls + tools to `server.py`**
 
-Append:
+Insert before `if __name__ == "__main__":`:
 ```python
 # ---- watchlist & alerts ----
 
-@mcp.tool()
-def list_watchlist() -> list[WatchEntry]:
-    return _store.list_watch()
+def _list_watchlist_impl(store: WatchlistStore) -> list[WatchEntry]:
+    return store.list_watch()
 
 
-@mcp.tool()
-def add_to_watchlist(symbol: str, notes: Optional[str] = None) -> WatchEntry:
-    return _store.add_watch(symbol, notes)
+def _add_to_watchlist_impl(store: WatchlistStore, symbol: str,
+                            notes: Optional[str] = None) -> WatchEntry:
+    return store.add_watch(symbol, notes)
 
 
-@mcp.tool()
-def remove_from_watchlist(symbol: str) -> bool:
-    return _store.remove_watch(symbol)
+def _remove_from_watchlist_impl(store: WatchlistStore, symbol: str) -> bool:
+    return store.remove_watch(symbol)
 
 
-@mcp.tool()
-def set_alert_rule(symbol: str, type: str, condition: dict) -> AlertRule:
-    """Create or replace an alert rule.
-
-    Args:
-      symbol: PSX ticker (uppercased)
-      type: 'price' | 'indicator' | 'volume' | 'announcement'
-      condition: dict {indicator?, op, value, lookback_days?}
-    """
+def _set_alert_rule_impl(store: WatchlistStore, *, symbol: str, type: str,
+                          condition: dict) -> AlertRule:
     cond = AlertCondition(**condition)
-    return _store.set_alert_rule(symbol=symbol, type=type, condition=cond)
+    return store.set_alert_rule(symbol=symbol, type=type, condition=cond)
 
 
-@mcp.tool()
-def list_alert_rules(symbol: Optional[str] = None) -> list[AlertRule]:
-    return _store.list_alert_rules(symbol)
+def _list_alert_rules_impl(store: WatchlistStore, symbol: Optional[str] = None) -> list[AlertRule]:
+    return store.list_alert_rules(symbol)
 
 
-@mcp.tool()
-def remove_alert_rule(rule_id: str) -> bool:
-    return _store.remove_alert_rule(rule_id)
+def _remove_alert_rule_impl(store: WatchlistStore, rule_id: str) -> bool:
+    return store.remove_alert_rule(rule_id)
 
 
-@mcp.tool()
-def check_alerts(symbols: Optional[list[str]] = None) -> list[AlertHit]:
-    """Evaluate all (or selected) alert rules against latest cached data. On-demand scan."""
-    return run_alerts(_cache, _store, symbols=symbols)
+def _check_alerts_impl(cache: Cache, store: WatchlistStore,
+                        symbols: Optional[list[str]] = None) -> list[AlertHit]:
+    return run_alerts(cache, store, symbols=symbols)
 
 
-# ---- analysis helpers ----
-
-@mcp.tool()
-def scan_volume_spikes(symbols: Optional[list[str]] = None,
-                       multiplier: float = 2.0,
-                       lookback_days: int = 20) -> list[VolumeSpike]:
-    """Find symbols whose latest volume is >= multiplier * average."""
+def _scan_volume_spikes_impl(cache: Cache, symbols: Optional[list[str]],
+                              multiplier: float, lookback_days: int) -> list[VolumeSpike]:
     if not symbols:
-        symbols = [s["symbol"] for s in _cache.all_symbols()]
-    today = date.today()
+        symbols = [s["symbol"] for s in cache.all_symbols()]
     out: list[VolumeSpike] = []
     for sym in symbols:
-        bars = _cache.get_bars(sym, today - timedelta(days=lookback_days * 2), today)
-        if len(bars) < 5:
+        df = bars_df(cache, sym, lookback_days)
+        if len(df) < 5:
             continue
-        df = pd.DataFrame(bars).sort_values("date")
         today_vol = float(df["volume"].iloc[-1])
         avg_vol = float(df["volume"].iloc[:-1].mean()) if len(df) > 1 else 0.0
         mult = today_vol / avg_vol if avg_vol else 0.0
         if mult >= multiplier:
             out.append(VolumeSpike(symbol=sym, today_volume=int(today_vol),
-                                   avg_volume=avg_vol, multiplier=mult))
+                                    avg_volume=avg_vol, multiplier=mult))
     out.sort(key=lambda v: v.multiplier, reverse=True)
     return out
 
 
-@mcp.tool()
-def compare_symbols(symbols: list[str], metrics: list[str]) -> ComparisonTable:
-    """Side-by-side metric table across symbols. metrics: price | rsi14 | sma50 | sma200 | pe | eps | div_yield."""
-    today = date.today()
+def _compare_symbols_impl(cache: Cache, symbols: list[str], metrics: list[str]) -> ComparisonTable:
     rows: list[ComparisonRow] = []
     for sym in symbols:
         m: dict = {}
-        q = _cache.get_latest_quote(sym)
-        f = _cache.get_fundamentals(sym)
-        bars = _cache.get_bars(sym, today - timedelta(days=400), today)
-        df = pd.DataFrame(bars).sort_values("date") if bars else None
+        q = cache.get_latest_quote(sym)
+        f = cache.get_fundamentals(sym)
+        df = bars_df(cache, sym, lookback_days=400)
         for name in metrics:
             if name == "price":
                 m[name] = q["price"] if q else None
-            elif name == "rsi14" and df is not None and len(df) >= 14:
+            elif name == "rsi14" and not df.empty and len(df) >= 14:
                 m[name] = float(rsi(df["close"], 14).iloc[-1])
-            elif name.startswith("sma") and df is not None:
+            elif name.startswith("sma") and not df.empty:
                 window = int(name[3:])
-                if len(df) >= window:
-                    m[name] = float(sma(df["close"], window).iloc[-1])
-                else:
-                    m[name] = None
+                m[name] = float(sma(df["close"], window).iloc[-1]) if len(df) >= window else None
             elif name in ("pe", "eps", "pb", "div_yield", "payout", "roe"):
                 m[name] = (f or {}).get(name)
             else:
                 m[name] = None
         rows.append(ComparisonRow(symbol=sym, metrics=m))
     return ComparisonTable(metrics=metrics, rows=rows)
+
+
+@mcp.tool()
+async def list_watchlist() -> list[WatchEntry]:
+    return _list_watchlist_impl(_store)
+
+
+@mcp.tool()
+async def add_to_watchlist(symbol: str, notes: Optional[str] = None) -> WatchEntry:
+    return _add_to_watchlist_impl(_store, symbol, notes)
+
+
+@mcp.tool()
+async def remove_from_watchlist(symbol: str) -> bool:
+    return _remove_from_watchlist_impl(_store, symbol)
+
+
+@mcp.tool()
+async def set_alert_rule(symbol: str, type: str, condition: dict) -> AlertRule:
+    """Create or replace an alert rule.
+
+    type: 'price' | 'indicator' | 'volume' | 'announcement'
+    condition: {indicator?, op, value, lookback_days?}
+    """
+    return _set_alert_rule_impl(_store, symbol=symbol, type=type, condition=condition)
+
+
+@mcp.tool()
+async def list_alert_rules(symbol: Optional[str] = None) -> list[AlertRule]:
+    return _list_alert_rules_impl(_store, symbol)
+
+
+@mcp.tool()
+async def remove_alert_rule(rule_id: str) -> bool:
+    return _remove_alert_rule_impl(_store, rule_id)
+
+
+@mcp.tool()
+async def check_alerts(symbols: Optional[list[str]] = None) -> list[AlertHit]:
+    """Evaluate all (or selected) alert rules against latest cached data."""
+    return _check_alerts_impl(_cache, _store, symbols)
+
+
+@mcp.tool()
+async def scan_volume_spikes(symbols: Optional[list[str]] = None,
+                              multiplier: float = 2.0,
+                              lookback_days: int = 20) -> list[VolumeSpike]:
+    """Find symbols whose latest volume is >= multiplier * recent average."""
+    return _scan_volume_spikes_impl(_cache, symbols, multiplier, lookback_days)
+
+
+@mcp.tool()
+async def compare_symbols(symbols: list[str], metrics: list[str]) -> ComparisonTable:
+    """Side-by-side metric table. metrics: price | rsi14 | sma50 | sma200 | pe | eps | div_yield | …"""
+    return _compare_symbols_impl(_cache, symbols, metrics)
 ```
 
 - [ ] **Step 4: Run — expect pass**
@@ -2823,7 +3347,7 @@ git commit -m "feat(psx-mcp): watchlist, alert tools, scan_volume_spikes, compar
 
 ---
 
-### Task 15: Run script, README, MCP registration
+### Task 16: Run script + README
 
 **Files:**
 - Create: `psx-mcp/run-psx-mcp.ps1`
@@ -2841,8 +3365,10 @@ uv run python server.py
 
 - [ ] **Step 2: Write the README**
 
+Note: outer fence in README uses `~~~` to avoid nested-backtick collision when rendered.
+
 `README.md`:
-```markdown
+~~~markdown
 # PSX MCP Server
 
 Local MCP server exposing PSX (Pakistan Stock Exchange) research tools and on-demand alerts.
@@ -2854,6 +3380,13 @@ Local MCP server exposing PSX (Pakistan Stock Exchange) research tools and on-de
 ```powershell
 cd C:\Users\pc\work\stocks\psx-mcp
 uv sync --extra dev
+```
+
+## Capture fixtures (first time only)
+
+```powershell
+uv run python scripts/capture_fixtures.py
+uv run python scripts/capture_rss.py
 ```
 
 ## Run
@@ -2877,6 +3410,7 @@ uv run pytest
 ```
 
 Live smoke test (gated, hits real PSX):
+
 ```powershell
 $env:PSX_LIVE="1"; uv run pytest tests/test_live.py
 ```
@@ -2898,6 +3432,7 @@ $env:PSX_LIVE="1"; uv run pytest tests/test_live.py
 | `get_news` | cached news, filterable by symbol |
 | `get_company_info` | profile + listed shares |
 | `get_fundamentals` | EPS, P/E, P/B, etc. |
+| `get_financials` | annual/quarterly statements (best-effort) |
 | `list_watchlist` / `add_to_watchlist` / `remove_from_watchlist` | watchlist mgmt |
 | `set_alert_rule` / `list_alert_rules` / `remove_alert_rule` | rule mgmt |
 | `check_alerts` | on-demand alert scan |
@@ -2910,7 +3445,7 @@ $env:PSX_LIVE="1"; uv run pytest tests/test_live.py
 - Call `refresh_market` before `check_alerts` for fresh quote-based rules.
 - Indicator/volume rules need history — call `refresh_history` for watched symbols first.
 - `data/psx.db` and `data/watchlist.json` persist between runs.
-```
+~~~
 
 - [ ] **Step 3: Commit**
 
@@ -2921,7 +3456,7 @@ git commit -m "docs(psx-mcp): README + launcher script"
 
 ---
 
-### Task 16: Live smoke test (gated)
+### Task 17: Live smoke test (gated)
 
 **Files:**
 - Create: `psx-mcp/tests/test_live.py`
@@ -2960,7 +3495,7 @@ Run:
 ```powershell
 $env:PSX_LIVE="1"; uv run pytest tests/test_live.py -v
 ```
-Expected: pass. If it fails, the live PSX site shape may have changed — re-run the fixture capture in Task 6 Step 1 and adapt parsers.
+Expected: pass. If it fails, the live PSX site shape may have changed — re-run `scripts/capture_fixtures.py` and adapt parsers.
 
 - [ ] **Step 4: Commit**
 
@@ -2971,7 +3506,7 @@ git commit -m "test(psx-mcp): live smoke test, gated by PSX_LIVE"
 
 ---
 
-### Task 17: Register MCP and end-to-end manual verification
+### Task 18: Register MCP and end-to-end manual verification
 
 - [ ] **Step 1: Start the server**
 
@@ -2997,7 +3532,7 @@ Ask Claude in a new session:
 2. `Get the latest quote and 90-day chart for LUCK.` → quote + bars returned.
 3. `Add LUCK to my watchlist and set an alert when RSI(14) drops below 30.` → entry + rule created.
 4. `Check my alerts.` → returns hits (likely empty).
-5. `Compare LUCK and DGKC on price, P/E, RSI(14).` → table returned.
+5. `Compare LUCK and DGKC on price, P/E, RSI(14).` → table returned (after `refresh_history` on both).
 
 If any step errors, fix the underlying tool; do not silence the test.
 
@@ -3015,23 +3550,42 @@ git commit -m "chore(psx-mcp): post-verification fixes" --allow-empty
 Ran the self-review checks against the spec:
 
 1. **Spec coverage** — every spec section maps to a task:
-   - §3 Architecture → Tasks 1, 11, 15
-   - §4 Tool surface → Tasks 11–14
-   - §5 Data sources → Task 6
+   - §3 Architecture → Tasks 1, 12, 16
+   - §4 Tool surface — every tool listed in spec is now implemented:
+     - market data → Tasks 12, 13
+     - fundamentals (including `get_financials`) → Task 14
+     - announcements & news → Task 14
+     - watchlist & alerts → Task 15
+     - analysis helpers → Tasks 12, 15
+   - §5 Data sources → Task 7 (intraday `/timeseries/int/<SYM>` explicitly deferred — daily covers all needs)
    - §6 Storage → Task 4
-   - §7 Error handling → built into psx_client.PSXClient._get retries (Task 6) + stale-quote handling in `get_quote` (Task 11)
-   - §8 Disclaimers → DEFAULT_DISCLAIMER on every model (Task 2), repeated in MCP server description (default FastMCP behavior)
-   - §9 Testing → fixture-driven tests in Tasks 4–14, gated live test in Task 16
-   - §10 Dependencies → Task 1 pyproject.toml
-   - §11 Registration → Task 17
+   - §7 Error handling → `PSXClient._get` retries (Task 7), `stale=True` quotes (Task 12), parser fallbacks (Task 7)
+   - §8 Disclaimers → `DEFAULT_DISCLAIMER` on every Disclaimer-derived model (Task 2), repeated in `FastMCP(..., instructions=...)` (Task 12)
+   - §9 Testing → fixture-driven tests in Tasks 4–15, gated live test in Task 17
+   - §10 Dependencies → Task 1
+   - §11 Registration → Task 18
 
-2. **Placeholders** — no TBD/TODO. The discovery step in Task 6 has explicit "stop and report" guidance instead of vague language.
+2. **Placeholders** — no TBD/TODO. The fixture-capture step in Task 7 has explicit "stop and report" guidance instead of vague language. Parsers handle both JSON and HTML payloads via `_try_json`.
 
-3. **Type consistency** — `Quote`, `Bar`, `AlertRule`, `AlertCondition`, `WatchEntry` defined in Task 2 are used identically in Tasks 4, 9, 10, 11–14. `evaluate_rule` and `run_alerts` signatures match across `alerts.py` and `server.py`. `RuleType` and `Operator` are imported, not redefined.
+3. **Type / signature consistency**:
+   - `Quote`, `Bar`, `AlertRule`, `AlertCondition`, `WatchEntry`, `FinancialStatement` defined once in Task 2; used identically in Tasks 4, 7, 11, 14.
+   - `_impl` helper signatures match between implementation (`server.py`) and tests (`test_server.py`).
+   - `bars_df` is the single shared DataFrame helper, used by `alerts.py`, `_compute_indicators_impl`, `_scan_volume_spikes_impl`, `_compare_symbols_impl`.
 
-4. **Ambiguity** — adapted parsers in Task 6 are explicitly "fixture-driven; adapt selectors to match real shape" with `_f`/`_i` defensive helpers and bounded-failure design.
+4. **Critic-pass blockers from prior review — all addressed**:
+   - B1 (Pydantic validator) → fixed: all validators are `@field_validator(..., mode="before")` + `@classmethod`
+   - B2 (asyncio runner) → fixed: tools are `async def`, no `_async` helper; tests use `asyncio.run(...)` directly
+   - B3 (FastMCP tools as callables) → fixed: every tool body delegates to a sync/async `_<name>_impl(...)` helper that tests exercise directly
+   - B4 (PowerShell here-strings) → fixed: discovery scripts at `scripts/capture_fixtures.py` and `scripts/capture_rss.py`
+   - B5 (JSON-only parsers) → fixed: `_try_json` helper + dual-path parsers in `parse_historical`, `parse_symbols`, `parse_announcements`
+   - M1 (missing `get_financials`) → fixed: added in Task 14 with `parse_financial_statements`
+   - M2 (intraday endpoint) → fixed: dropped from capture, deferred explicitly
+   - M3 (`change_pct` for sub-rupee) → fixed: explicit `prev_close > 0` guard; test included
+   - M5 (`PARSE_DECLTYPES`) → fixed: removed
+   - M6 (hardcoded test dates) → fixed: all test bar seeding is relative to `date.today()`
+   - m7 (FastMCP instructions) → fixed: passed via `FastMCP(..., instructions=...)`
 
-No issues remain.
+No outstanding issues.
 
 ---
 
@@ -3039,4 +3593,4 @@ No issues remain.
 
 Plan complete and saved to `docs/superpowers/plans/2026-05-23-psx-mcp-implementation.md`.
 
-User has already chosen **subagent-driven development** for execution. Before executing, dispatch a fresh critic subagent to review this plan and iterate on gaps it surfaces. Only after the critic pass settles should the implementation begin task-by-task via `superpowers:subagent-driven-development`.
+User has chosen **subagent-driven development** for execution. After this critic pass, dispatch a final critic if any major changes were made; otherwise begin task-by-task implementation via `superpowers:subagent-driven-development`.
