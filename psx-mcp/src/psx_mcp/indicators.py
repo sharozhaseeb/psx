@@ -52,16 +52,11 @@ Cross = Literal["crosses_above", "crosses_below"]
 
 
 def last_crosses(a: pd.Series, b: pd.Series, op: Cross) -> bool:
+    """True iff the cross happened on the LATEST bar (between iloc[-2] and iloc[-1])."""
     if len(a) < 2 or len(b) < 2:
         return False
-    # Iterate backwards from the end to find the most recent crossing
-    for i in range(len(a) - 1, 0, -1):
-        prev_a, prev_b = a.iloc[i-1], b.iloc[i-1]
-        curr_a, curr_b = a.iloc[i], b.iloc[i]
-        if op == "crosses_above":
-            if bool(prev_a <= prev_b and curr_a > curr_b):
-                return True
-        else:  # crosses_below
-            if bool(prev_a >= prev_b and curr_a < curr_b):
-                return True
-    return False
+    prev_a, prev_b = a.iloc[-2], b.iloc[-2]
+    curr_a, curr_b = a.iloc[-1], b.iloc[-1]
+    if op == "crosses_above":
+        return bool(prev_a <= prev_b and curr_a > curr_b)
+    return bool(prev_a >= prev_b and curr_a < curr_b)

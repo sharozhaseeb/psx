@@ -56,16 +56,24 @@ def test_volume_zscore_positive_spike():
     assert z.iloc[-1] > 2.0
 
 
-def test_crosses_above_detected():
-    a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+def test_crosses_above_on_latest_bar():
+    # Cross happens between iloc[-2]=2.5 and iloc[-1]=4.0 over threshold 3.0
+    a = pd.Series([1.0, 1.5, 2.0, 2.5, 4.0])
     b = pd.Series([3.0, 3.0, 3.0, 3.0, 3.0])
     assert last_crosses(a, b, "crosses_above") is True
 
 
-def test_crosses_below_detected():
-    a = pd.Series([5.0, 4.0, 3.0, 2.0, 1.0])
+def test_crosses_below_on_latest_bar():
+    a = pd.Series([5.0, 4.5, 4.0, 3.5, 2.0])
     b = pd.Series([3.0, 3.0, 3.0, 3.0, 3.0])
     assert last_crosses(a, b, "crosses_below") is True
+
+
+def test_no_cross_when_already_above():
+    # a was already above b in prev bar — not a fresh cross
+    a = pd.Series([1.0, 2.0, 3.5, 4.0, 5.0])
+    b = pd.Series([3.0, 3.0, 3.0, 3.0, 3.0])
+    assert last_crosses(a, b, "crosses_above") is False
 
 
 def test_no_cross_when_flat():
