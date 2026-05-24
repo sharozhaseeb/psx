@@ -418,6 +418,11 @@ class UpcomingEventsResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class WatchlistWithScoresResponse(Disclaimer):
+    entries: list[dict]
+    note: Optional[str] = None
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str

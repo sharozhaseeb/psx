@@ -32,7 +32,7 @@ from psx_mcp.models import (
     SectorRankResponse, UniverseRankResponse,
     FullAnalysisResponse, PositionSizeResponse,
     CacheStatusResponse, BulkRefreshResponse,
-    UpcomingEventsResponse,
+    UpcomingEventsResponse, WatchlistWithScoresResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.ranking import (
@@ -480,6 +480,35 @@ def _list_watchlist_impl(store: WatchlistStore) -> list[WatchEntry]:
     return store.list_watch()
 
 
+def _list_watchlist_with_scores_impl(cache: Cache,
+                                      store: WatchlistStore) -> WatchlistWithScoresResponse:
+    entries = []
+    for w in store.list_watch():
+        try:
+            qs = _compute_4quadrant_score_impl(cache, w.symbol)
+            composite = qs.total
+            quadrants = {k: getattr(qs, k) for k in ("value", "quality", "momentum", "trend")}
+            warnings_for_entry = list(getattr(qs, "warnings", []) or [])
+        except Exception as e:
+            composite = None
+            quadrants = {}
+            warnings_for_entry = [f"score-failed: {e!r}"]
+        quote = cache.get_latest_quote(w.symbol) or {}
+        entries.append({
+            "symbol": w.symbol,
+            "notes": w.notes,
+            "added_at": w.added_at.isoformat(),
+            "price": quote.get("price"),
+            "composite": composite,
+            "quadrants": quadrants,
+            "warnings": warnings_for_entry,
+        })
+    note = None
+    if not entries:
+        note = "Watchlist is empty. Use add_to_watchlist(symbol) first."
+    return WatchlistWithScoresResponse(entries=entries, note=note)
+
+
 def _add_to_watchlist_impl(store: WatchlistStore, symbol: str,
                             notes: Optional[str] = None) -> WatchEntry:
     return store.add_watch(symbol, notes)
@@ -561,6 +590,13 @@ def _compare_symbols_impl(cache: Cache, symbols: list[str], metrics: list[str]) 
 @mcp.tool()
 async def list_watchlist() -> list[WatchEntry]:
     return _list_watchlist_impl(_store)
+
+
+@mcp.tool()
+async def list_watchlist_with_scores() -> WatchlistWithScoresResponse:
+    """Like list_watchlist but each entry includes its current 4-quadrant
+    composite score (0..4) and price. Heavy: computes scores per entry."""
+    return _list_watchlist_with_scores_impl(_cache, _store)
 
 
 @mcp.tool()

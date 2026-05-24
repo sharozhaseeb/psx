@@ -872,3 +872,32 @@ def test_get_upcoming_events_filters_by_title_keywords(tmp_path):
     assert all("Disclosure of Interest" not in t for t in titles)
     # A3 is older than 7 days → excluded
     assert all("Other Than Financial" not in t for t in titles)
+
+
+def test_list_watchlist_with_scores_attaches_composite(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime, date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    store = WatchlistStore(str(tmp_path / "w.json"))
+    store.add_watch("SYS", notes="tech leader")
+    ts = datetime(2026, 5, 23, 10, 0)
+    today = date(2026, 5, 23)
+    cache.upsert_symbol("SYS", "Systems", "TECHNOLOGY & COMMUNICATION", None)
+    cache.upsert_quote(symbol="SYS", ts=ts, price=600.0, change=5.0,
+                       volume=100_000, day_high=605, day_low=595, fetched_at=ts)
+    cache.upsert_fundamentals(symbol="SYS", eps=10.0, pe=8.0, pb=None,
+                              div_yield=None, payout=None, roe=20.0)
+    bars = [Bar(symbol="SYS", date=today - timedelta(days=259 - i),
+                open=100.0 + i, high=100.0 + i, low=100.0 + i,
+                close=100.0 + i, volume=1000) for i in range(260)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=store, client=None)
+    out = srv._list_watchlist_with_scores_impl(cache, store)
+    assert len(out.entries) == 1
+    e = out.entries[0]
+    assert e["symbol"] == "SYS"
+    assert "composite" in e
+    assert e["notes"] == "tech leader"
