@@ -276,6 +276,38 @@ def test_compare_symbols(deps):
     assert out.rows[0].symbol == "LUCK"
 
 
+def test_compare_symbols_includes_change_pct_and_volume(tmp_path):
+    """Regression: compare_symbols was returning None for change_pct/volume."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_quote(
+        symbol="SYS", ts=datetime(2026, 5, 23, 10, 0),
+        price=600.0, change=5.0, volume=100_000, day_high=605, day_low=595,
+        fetched_at=datetime(2026, 5, 23, 10, 1),
+    )
+    cache.upsert_quote(
+        symbol="NETSOL", ts=datetime(2026, 5, 23, 10, 0),
+        price=120.0, change=-2.0, volume=50_000, day_high=125, day_low=118,
+        fetched_at=datetime(2026, 5, 23, 10, 1),
+    )
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    out = srv._compare_symbols_impl(cache, symbols=["SYS", "NETSOL"],
+                                     metrics=["price", "change_pct", "volume"])
+    rows = {r.symbol: r.metrics for r in out.rows}
+    for sym in ("SYS", "NETSOL"):
+        assert rows[sym]["price"] is not None
+        assert rows[sym]["change_pct"] is not None
+        assert rows[sym]["volume"] is not None
+    # SYS: change=+5 on prev_close=595 → ~0.840%
+    assert rows["SYS"]["change_pct"] == pytest.approx(5.0 / 595.0 * 100, rel=1e-3)
+    assert rows["SYS"]["volume"] == 100_000
+    # NETSOL: change=-2 on prev_close=122 → ~-1.639%
+    assert rows["NETSOL"]["change_pct"] == pytest.approx(-2.0 / 122.0 * 100, rel=1e-3)
+    assert rows["NETSOL"]["volume"] == 50_000
+
+
 def test_search_symbol_matches_name(tmp_path):
     """Verify case-insensitive name matching still works (regression guard)."""
     import server as srv

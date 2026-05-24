@@ -454,6 +454,14 @@ def _compare_symbols_impl(cache: Cache, symbols: list[str], metrics: list[str]) 
         for name in metrics:
             if name == "price":
                 m[name] = q["price"] if q else None
+            elif name == "volume":
+                m[name] = q["volume"] if q else None
+            elif name == "change_pct":
+                if q:
+                    prev_close = q["price"] - q["change"]
+                    m[name] = (q["change"] / prev_close * 100) if prev_close > 0 else 0.0
+                else:
+                    m[name] = None
             elif name == "rsi14" and not df.empty and len(df) >= 14:
                 m[name] = float(rsi(df["close"], 14).iloc[-1])
             elif name.startswith("sma") and not df.empty:
