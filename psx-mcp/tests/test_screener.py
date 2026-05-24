@@ -85,6 +85,19 @@ def test_screen_above_sma200(seeded_cache):
         assert r["sma200"] is not None and r["price"] > r["sma200"]
 
 
+def test_screen_filters_by_roe_min(seeded_cache):
+    """Seeded cache: upsert ROE values then assert screen filters correctly."""
+    seeded_cache.upsert_fundamentals(symbol="SYS", eps=5.46, pe=27.5, pb=None,
+                                      div_yield=None, payout=None, roe=18.0)
+    seeded_cache.upsert_fundamentals(symbol="NETSOL", eps=10.0, pe=12.0, pb=None,
+                                      div_yield=None, payout=None, roe=5.0)
+    from psx_mcp.screener import screen, FilterSpec
+    out = screen(seeded_cache, FilterSpec(roe_min=10.0))
+    syms = {r["symbol"] for r in out}
+    assert "SYS" in syms
+    assert "NETSOL" not in syms
+
+
 def test_screen_results_include_roe_and_pb(seeded_cache):
     """Regression: screen() must propagate ROE/P/B/div_yield/payout into result dicts."""
     seeded_cache.upsert_fundamentals(symbol="SYS", eps=5.46, pe=27.5, pb=4.0,

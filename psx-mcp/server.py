@@ -590,6 +590,9 @@ async def screen_symbols(
     sma20_gt_sma50: bool | None = None,
     min_volume: int | None = None,
     min_turnover_pkr: float | None = None,
+    roe_min: float | None = None,
+    pb_max: float | None = None,
+    div_yield_min: float | None = None,
     sort_by: str = "symbol",
     desc: bool = False,
     limit: int = 50,
@@ -609,6 +612,7 @@ async def screen_symbols(
         rsi_min=rsi_min, rsi_max=rsi_max,
         above_sma200=above_sma200, sma20_gt_sma50=sma20_gt_sma50,
         min_volume=min_volume, min_turnover_pkr=min_turnover_pkr,
+        roe_min=roe_min, pb_max=pb_max, div_yield_min=div_yield_min,
         sort_by=sort_by, desc=desc, limit=limit,
     )
 

@@ -28,6 +28,9 @@ class FilterSpec:
     sma20_gt_sma50: Optional[bool] = None
     min_volume: Optional[int] = None
     min_turnover_pkr: Optional[float] = None
+    roe_min: Optional[float] = None
+    pb_max: Optional[float] = None
+    div_yield_min: Optional[float] = None
     sort_by: str = "symbol"
     desc: bool = False
     limit: int = 50
@@ -50,6 +53,15 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
     if spec.pe_max is not None:
         where.append("f.pe <= ?")
         params.append(spec.pe_max)
+    if spec.roe_min is not None:
+        where.append("f.roe >= ?")
+        params.append(spec.roe_min)
+    if spec.pb_max is not None:
+        where.append("f.pb <= ?")
+        params.append(spec.pb_max)
+    if spec.div_yield_min is not None:
+        where.append("f.div_yield >= ?")
+        params.append(spec.div_yield_min)
     if spec.eps_min is not None:
         where.append("f.eps >= ?")
         params.append(spec.eps_min)
@@ -107,9 +119,9 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
             continue
         if spec.above_sma200 is False and (sma200 is not None and price > sma200):
             continue
-        if spec.sma20_gt_sma50 is True and not (sma20 and sma50 and sma20 > sma50):
+        if spec.sma20_gt_sma50 is True and not (sma20 is not None and sma50 is not None and sma20 > sma50):
             continue
-        if spec.sma20_gt_sma50 is False and (sma20 and sma50 and sma20 > sma50):
+        if spec.sma20_gt_sma50 is False and (sma20 is not None and sma50 is not None and sma20 > sma50):
             continue
 
         results.append({
