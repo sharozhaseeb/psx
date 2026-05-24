@@ -124,7 +124,7 @@ def _compute_indicators_impl(cache: Cache, symbol: str, indicators: list[str] | 
                 out[name] = float(atr(df["high"], df["low"], df["close"], window).iloc[-1])
             else:
                 out[name] = {"error": f"unknown indicator: {name}"}
-        except (ValueError, IndexError, KeyError) as e:
+        except (ValueError, IndexError, KeyError, ZeroDivisionError) as e:
             out[name] = {"error": str(e)}
     out["disclaimer"] = DEFAULT_DISCLAIMER
     return out
