@@ -66,20 +66,7 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
         where.append("q.price * q.volume >= ?")
         params.append(spec.min_turnover_pkr)
 
-    sql = """
-        SELECT s.symbol, s.name, s.sector,
-               q.price, q.change, q.volume,
-               f.pe, f.eps
-        FROM symbols s
-        JOIN quotes q ON q.symbol = s.symbol
-            AND q.ts = (SELECT MAX(ts) FROM quotes q2 WHERE q2.symbol = s.symbol)
-        LEFT JOIN fundamentals f ON f.symbol = s.symbol
-    """
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " LIMIT 500"  # candidate cap
-
-    rows = cache.conn.execute(sql, params).fetchall()
+    rows = cache.screen_candidates(" AND ".join(where), params)
 
     # 2) Compute change_pct and indicators per candidate
     results: list[dict] = []
@@ -91,11 +78,7 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
         change_pct = (change / prev_close * 100) if prev_close > 0 else None
 
         # Fetch close series for indicators
-        close_rows = cache.conn.execute(
-            "SELECT close FROM bars_daily WHERE symbol = ? ORDER BY date ASC",
-            (sym,),
-        ).fetchall()
-        closes_list = [c["close"] for c in close_rows]
+        closes_list = cache.closes_for(sym)
         technical_active = any(
             x is not None for x in [
                 spec.rsi_min, spec.rsi_max,
@@ -131,6 +114,8 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
             "symbol": sym, "name": r["name"], "sector": r["sector"],
             "price": price, "change_pct": change_pct, "volume": r["volume"],
             "pe": r["pe"], "eps": r["eps"],
+            "pb": r["pb"], "div_yield": r["div_yield"],
+            "payout": r["payout"], "roe": r["roe"],
             "sma20": sma20, "sma50": sma50, "sma200": sma200, "rsi14": rsi14,
         })
 

@@ -149,6 +149,44 @@ def test_top_movers_skips_invalid_prev_close(tmp_path):
     assert [m["symbol"] for m in movers["by_volume"]] == ["GOOD"]
 
 
+def test_closes_for_returns_all_bars_ascending(tmp_path):
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    # Seed so that oldest date has lowest close, newest has highest; date-ascending
+    # then implies value-ascending, letting `closes == sorted(closes)` verify order.
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=9 - i),
+                open=100.0, high=110.0, low=90.0, close=100.0 + i, volume=1000)
+            for i in range(10)]
+    cache.upsert_bars(bars)
+    closes = cache.closes_for("XYZ")
+    assert len(closes) == 10
+    assert closes == sorted(closes)  # ascending by date -> oldest first
+
+
+def test_screen_candidates_filters_via_parameterized_sql(tmp_path):
+    from psx_mcp.cache import Cache
+    from datetime import datetime
+    cache = Cache(str(tmp_path / "c.db"))
+    ts = datetime(2026, 5, 23, 10, 0)
+    cache.upsert_symbol("SYS", "Systems", "TECHNOLOGY & COMMUNICATION", None)
+    cache.upsert_symbol("HUBC", "Hub Power", "POWER GENERATION & DISTRIBUTION", None)
+    for sym, price, change, vol, pe in [
+        ("SYS", 600.0, 5.0, 100_000, 12.0),
+        ("HUBC", 200.0, 1.0, 200_000, 8.0),
+    ]:
+        cache.upsert_quote(symbol=sym, ts=ts, price=price, change=change, volume=vol,
+                           day_high=price+1, day_low=price-1, fetched_at=ts)
+        cache.upsert_fundamentals(symbol=sym, eps=10.0, pe=pe, pb=None,
+                                  div_yield=None, payout=None, roe=None)
+    out = cache.screen_candidates("s.sector = ? AND f.pe <= ?",
+                                  ["TECHNOLOGY & COMMUNICATION", 15.0])
+    assert len(out) == 1
+    assert out[0]["symbol"] == "SYS"
+
+
 def test_fifty_two_week_handles_partial_history(cache):
     import datetime as dt
     base = dt.date(2025, 1, 1)

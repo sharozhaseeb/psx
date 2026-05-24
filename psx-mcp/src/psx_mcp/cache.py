@@ -214,6 +214,40 @@ class Cache:
             float(lo) if lo is not None else 0.0,
         )
 
+    def closes_for(self, symbol: str, limit: Optional[int] = None) -> list[float]:
+        """Return cached close prices for symbol, oldest first.
+        If limit is given, returns the most-recent `limit` closes (still oldest-first within window)."""
+        sql = "SELECT close FROM bars_daily WHERE symbol = ? ORDER BY date ASC"
+        params: tuple = (symbol.upper(),)
+        if limit is not None:
+            sql = ("SELECT close FROM (SELECT close, date FROM bars_daily "
+                   "WHERE symbol = ? ORDER BY date DESC LIMIT ?) ORDER BY date ASC")
+            params = (symbol.upper(), limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [r["close"] for r in rows]
+
+    def screen_candidates(self, where_clause: str, params: list) -> list[dict]:
+        """Return [{symbol, name, sector, price, change, volume, pe, eps, pb, div_yield, payout, roe}]
+        for the latest-quote-per-symbol JOIN, filtered by an arbitrary parameterized WHERE clause.
+
+        SECURITY: where_clause is treated as trusted SQL — callers MUST never include
+        user input directly; only the `params` list carries user-provided values. The
+        screener uses a closed-set of column names from FilterSpec, so this is safe.
+        """
+        sql = f"""
+            SELECT s.symbol, s.name, s.sector,
+                   q.price, q.change, q.volume,
+                   f.pe, f.eps, f.pb, f.div_yield, f.payout, f.roe
+            FROM symbols s
+            JOIN quotes q ON q.symbol = s.symbol
+                AND q.ts = (SELECT MAX(ts) FROM quotes q2 WHERE q2.symbol = s.symbol)
+            LEFT JOIN fundamentals f ON f.symbol = s.symbol
+            WHERE {where_clause if where_clause else "1=1"}
+            LIMIT 500
+        """
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     def bars_latest_date(self, symbol: str) -> Optional[date]:
         r = self.conn.execute(
             "SELECT MAX(date) AS d FROM bars_daily WHERE symbol=?",

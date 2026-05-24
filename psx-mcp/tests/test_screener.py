@@ -85,6 +85,20 @@ def test_screen_above_sma200(seeded_cache):
         assert r["sma200"] is not None and r["price"] > r["sma200"]
 
 
+def test_screen_results_include_roe_and_pb(seeded_cache):
+    """Regression: screen() must propagate ROE/P/B/div_yield/payout into result dicts."""
+    seeded_cache.upsert_fundamentals(symbol="SYS", eps=5.46, pe=27.5, pb=4.0,
+                                      div_yield=2.5, payout=40.0, roe=22.0)
+    from psx_mcp.screener import screen, FilterSpec
+    out = screen(seeded_cache, FilterSpec(sector="TECHNOLOGY & COMMUNICATION"))
+    sys_row = next((r for r in out if r["symbol"] == "SYS"), None)
+    assert sys_row is not None
+    assert sys_row["roe"] == 22.0
+    assert sys_row["pb"] == 4.0
+    assert sys_row["div_yield"] == 2.5
+    assert sys_row["payout"] == 40.0
+
+
 def test_sector_summary_returns_breadth_and_leaders(seeded_cache):
     """Uses the existing seeded_cache fixture from test_screener.py."""
     out = sector_summary(seeded_cache, "TECHNOLOGY & COMMUNICATION")
