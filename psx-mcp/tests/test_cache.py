@@ -166,6 +166,25 @@ def test_closes_for_returns_all_bars_ascending(tmp_path):
     assert closes == sorted(closes)  # ascending by date -> oldest first
 
 
+def test_closes_for_many_returns_dict_keyed_by_symbol(tmp_path):
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    for sym in ("AAA", "BBB"):
+        bars = [Bar(symbol=sym, date=today - timedelta(days=4 - i),
+                    open=100.0, high=110.0, low=90.0, close=100.0 + i, volume=1000)
+                for i in range(5)]
+        cache.upsert_bars(bars)
+    out = cache.closes_for_many(["AAA", "BBB", "MISSING"])
+    assert set(out.keys()) == {"AAA", "BBB", "MISSING"}
+    assert len(out["AAA"]) == 5
+    assert len(out["MISSING"]) == 0
+    # Ascending by date (oldest first)
+    assert out["AAA"] == sorted(out["AAA"])
+
+
 def test_screen_candidates_filters_via_parameterized_sql(tmp_path):
     from psx_mcp.cache import Cache
     from datetime import datetime

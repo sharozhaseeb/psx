@@ -67,6 +67,8 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
         params.append(spec.min_turnover_pkr)
 
     rows = cache.screen_candidates(" AND ".join(where), params)
+    all_symbols = [r["symbol"] for r in rows]
+    closes_by_sym = cache.closes_for_many(all_symbols)
 
     # 2) Compute change_pct and indicators per candidate
     results: list[dict] = []
@@ -77,8 +79,8 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
         prev_close = price - change
         change_pct = (change / prev_close * 100) if prev_close > 0 else None
 
-        # Fetch close series for indicators
-        closes_list = cache.closes_for(sym)
+        # Fetch close series for indicators (batched up-front)
+        closes_list = closes_by_sym.get(sym, [])
         technical_active = any(
             x is not None for x in [
                 spec.rsi_min, spec.rsi_max,

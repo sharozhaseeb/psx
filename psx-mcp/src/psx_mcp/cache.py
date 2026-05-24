@@ -226,6 +226,24 @@ class Cache:
         rows = self.conn.execute(sql, params).fetchall()
         return [r["close"] for r in rows]
 
+    def closes_for_many(self, symbols: list[str]) -> dict[str, list[float]]:
+        """Return {symbol: [closes_ascending], ...} for the given symbols.
+        Symbols with no bars get an empty list (never missing-key)."""
+        syms_upper = [s.upper() for s in symbols]
+        if not syms_upper:
+            return {}
+        placeholders = ",".join("?" * len(syms_upper))
+        rows = self.conn.execute(
+            f"""SELECT symbol, close FROM bars_daily
+                WHERE symbol IN ({placeholders})
+                ORDER BY symbol ASC, date ASC""",
+            syms_upper,
+        ).fetchall()
+        out: dict[str, list[float]] = {s: [] for s in syms_upper}
+        for r in rows:
+            out[r["symbol"]].append(r["close"])
+        return out
+
     def screen_candidates(self, where_clause: str, params: list) -> list[dict]:
         """Return [{symbol, name, sector, price, change, volume, pe, eps, pb, div_yield, payout, roe}]
         for the latest-quote-per-symbol JOIN, filtered by an arbitrary parameterized WHERE clause.
