@@ -121,6 +121,33 @@ class Fundamentals(Disclaimer):
         return v.strip().upper() if isinstance(v, str) else v
 
 
+class FundamentalsHistoryPoint(BaseModel):
+    symbol: str
+    fiscal_year: int
+    eps: Optional[float] = None
+    pe: Optional[float] = None
+    pb: Optional[float] = None
+    div_yield: Optional[float] = None
+    payout: Optional[float] = None
+    roe: Optional[float] = None
+    gross_margin: Optional[float] = None
+    net_income: Optional[float] = None
+    cfo: Optional[float] = None
+    revenue: Optional[float] = None
+    total_assets: Optional[float] = None
+    long_term_debt: Optional[float] = None
+    current_liab: Optional[float] = None
+    current_assets: Optional[float] = None
+    shares_outstanding: Optional[float] = None
+    source_url: Optional[str] = None
+    refreshed_at: str  # ISO string from cache
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _u(cls, v):
+        return v.strip().upper() if isinstance(v, str) else v
+
+
 class FinancialStatement(BaseModel):
     symbol: str
     period: Literal["annual", "quarterly"]

@@ -20,9 +20,10 @@ from psx_mcp.alerts import run_alerts
 from psx_mcp.news import FEEDS, parse_rss, find_symbol_mentions
 from psx_mcp.models import (
     Quote, Bar, SymbolMatch, MarketSummary, Mover, CompanyInfo, Fundamentals,
-    FinancialStatement, Announcement, NewsItem, WatchEntry, AlertRule,
-    AlertCondition, AlertHit, VolumeSpike, ComparisonTable, ComparisonRow,
-    ScreenResponse, SectorSummaryResponse, DEFAULT_DISCLAIMER,
+    FundamentalsHistoryPoint, FinancialStatement, Announcement, NewsItem,
+    WatchEntry, AlertRule, AlertCondition, AlertHit, VolumeSpike,
+    ComparisonTable, ComparisonRow, ScreenResponse, SectorSummaryResponse,
+    DEFAULT_DISCLAIMER,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.logging_config import configure_logging, get_logger
@@ -300,6 +301,11 @@ async def _get_fundamentals_impl(cache: Cache, client: Optional[PSXClient], symb
     return f
 
 
+def _get_fundamentals_history_impl(cache: Cache, symbol: str) -> list[FundamentalsHistoryPoint]:
+    rows = cache.get_fundamentals_history(symbol)
+    return [FundamentalsHistoryPoint(**r) for r in rows]
+
+
 async def _get_financials_impl(cache: Cache, client: Optional[PSXClient],
                                 symbol: str, period: str = "annual") -> list[FinancialStatement]:
     if period not in ("annual", "quarterly"):
@@ -376,6 +382,14 @@ async def get_company_info(symbol: str) -> CompanyInfo:
 async def get_fundamentals(symbol: str) -> Fundamentals:
     """EPS, P/E, P/B, dividend yield. Cached for 1 day."""
     return await _get_fundamentals_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def get_fundamentals_history(symbol: str) -> list[FundamentalsHistoryPoint]:
+    """Cached per-fiscal-year fundamentals for a symbol, newest year first.
+    Populated by refresh_fundamentals(symbol) (deferred to Part 3 — requires
+    sub-tab fetcher). Empty list if never refreshed."""
+    return _get_fundamentals_history_impl(_cache, symbol)
 
 
 @mcp.tool()

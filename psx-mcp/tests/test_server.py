@@ -446,3 +446,35 @@ def test_get_sector_summary_returns_response(tmp_path):
     assert out.sector == "TECHNOLOGY & COMMUNICATION"
     assert out.n == 2
     assert out.disclaimer  # non-empty
+
+
+def test_get_fundamentals_history_returns_cached(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_fundamentals_history(
+        symbol="LUCK", fiscal_year=2025, eps=4.19, pe=None, pb=None,
+        div_yield=None, payout=None, roe=2.1, gross_margin=None,
+        net_income=None, cfo=None, revenue=None,
+        total_assets=None, long_term_debt=None, current_liab=None,
+        current_assets=None, shares_outstanding=None,
+        source_url=None, refreshed_at=datetime(2026, 5, 24),
+    )
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_fundamentals_history_impl(cache, "LUCK")
+    assert len(out) == 1
+    assert out[0].eps == 4.19
+
+
+def test_get_fundamentals_history_empty(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_fundamentals_history_impl(cache, "NOSUCH")
+    assert out == []
