@@ -318,6 +318,42 @@ class QuadrantScoreResponse(Disclaimer):
     raw: dict
 
 
+class DrawdownResponse(Disclaimer):
+    symbol: str
+    drawdown_pct: float
+    max_drawdown_pct: float
+    peak: Optional[float] = None
+    current: Optional[float] = None
+    note: Optional[str] = None
+
+
+class RiskMetricsResponse(Disclaimer):
+    symbol: str
+    volatility_annualized: float
+    sharpe: Optional[float] = None
+    max_drawdown_pct: float
+    n_bars: int
+    rf_annual: float = 0.0
+    note: Optional[str] = None
+
+
+class RelativeStrengthResponse(Disclaimer):
+    symbol: str
+    index_code: str
+    window: int
+    relative_strength_pct: Optional[float] = None
+    stock_return_pct: Optional[float] = None
+    index_return_pct: Optional[float] = None
+    n_bars: int
+    note: Optional[str] = None
+
+
+class CorrelationMatrixResponse(Disclaimer):
+    symbols: list[str]
+    matrix: dict[str, dict[str, Optional[float]]]
+    note: Optional[str] = None
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str

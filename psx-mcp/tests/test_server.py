@@ -586,3 +586,97 @@ def test_get_dividend_history_returns_cached(tmp_path):
     events = srv._get_dividend_history_impl(cache, "FFC")
     assert len(events) == 1
     assert events[0].per_share == 8.0
+
+
+def test_compute_drawdown_with_seeded_bars(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    closes = [100.0, 120.0, 80.0, 110.0]  # peak 120, max DD -33.33%, current down from peak
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=3 - i),
+                open=c, high=c, low=c, close=c, volume=1000)
+            for i, c in enumerate(closes)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_drawdown_impl(cache, "XYZ")
+    assert out.peak == 120.0
+    assert out.current == 110.0
+    assert out.drawdown_pct == pytest.approx(-8.3333, abs=1e-3)
+    assert out.max_drawdown_pct == pytest.approx(-33.3333, abs=1e-3)
+
+
+def test_compute_risk_metrics_seeded(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    import numpy as np
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    rng = np.random.default_rng(42)
+    pcts = rng.normal(loc=0.0008, scale=0.012, size=300)
+    closes = list(np.exp(np.cumsum(pcts)) * 100.0)
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=299 - i),
+                open=c, high=c, low=c, close=c, volume=1000)
+            for i, c in enumerate(closes)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_risk_metrics_impl(cache, "XYZ", rf_annual=0.0)
+    assert out.n_bars == 300
+    assert 0.10 < out.volatility_annualized < 0.30
+    assert out.sharpe is not None
+    assert out.max_drawdown_pct <= 0
+
+
+def test_compute_relative_strength_uses_index_history(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    # Stock up 30% over 252 bars; index up 10%.
+    for i in range(253):
+        d = today - timedelta(days=252 - i)
+        stock_c = 100.0 * (1.30 ** (i / 252))
+        idx_c = 100.0 * (1.10 ** (i / 252))
+        cache.upsert_bars([Bar(symbol="XYZ", date=d, open=stock_c, high=stock_c,
+                                low=stock_c, close=stock_c, volume=1)])
+        cache.upsert_index_bar(index_code="KSE100", bar_date=d,
+                                close=idx_c, volume=1e8)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_relative_strength_impl(cache, "XYZ", window=252)
+    assert out.relative_strength_pct is not None
+    assert 0.18 < out.relative_strength_pct < 0.22
+    assert out.n_bars == 253
+
+
+def test_compute_correlation_matrix_seeded(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    # AAA and BBB have identical close trajectories → corr 1.0
+    for sym in ("AAA", "BBB"):
+        bars = [Bar(symbol=sym, date=today - timedelta(days=49 - i),
+                    open=100.0+i, high=100.0+i, low=100.0+i,
+                    close=100.0+i, volume=1000)
+                for i in range(50)]
+        cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_correlation_impl(cache, ["AAA", "BBB"])
+    assert out.matrix["AAA"]["BBB"] == pytest.approx(1.0)
+    assert out.matrix["BBB"]["AAA"] == pytest.approx(1.0)

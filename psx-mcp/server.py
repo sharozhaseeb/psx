@@ -25,9 +25,16 @@ from psx_mcp.models import (
     VolumeSpike, ComparisonTable, ComparisonRow, ScreenResponse,
     SectorSummaryResponse, BetaResponse, QualityScoreResponse,
     QuadrantScoreResponse, DividendEvent, DEFAULT_DISCLAIMER,
+    DrawdownResponse, RiskMetricsResponse,
+    RelativeStrengthResponse, CorrelationMatrixResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.beta import beta
+from psx_mcp.risk import (
+    drawdown_current, drawdown_max,
+    volatility_annualized, sharpe,
+    relative_strength, correlation_matrix,
+)
 from psx_mcp.quality import (
     compute_quality_score as _compute_quality_score_pure,
     compute_4quadrant_score as _compute_4quadrant_score_pure,
@@ -704,6 +711,128 @@ async def compute_beta(symbol: str, index_code: str = "KSE100",
     refresh_market call). Call refresh_history(symbol) and refresh_market once
     before this for full coverage."""
     return _compute_beta_impl(_cache, symbol, index_code, window)
+
+
+def _series_for(cache: Cache, symbol: str) -> pd.Series:
+    return pd.Series(cache.closes_for(symbol))
+
+
+def _compute_drawdown_impl(cache: Cache, symbol: str) -> DrawdownResponse:
+    closes = _series_for(cache, symbol)
+    if len(closes) == 0:
+        return DrawdownResponse(symbol=symbol.upper(), drawdown_pct=0.0,
+                                 max_drawdown_pct=0.0,
+                                 note=f"No bars cached for {symbol}. "
+                                      f"Call refresh_history({symbol!r}).")
+    cur = drawdown_current(closes)
+    mx = drawdown_max(closes)
+    return DrawdownResponse(
+        symbol=symbol.upper(),
+        drawdown_pct=cur["drawdown_pct"],
+        max_drawdown_pct=mx["max_drawdown_pct"],
+        peak=cur["peak"],
+        current=cur["current"],
+        note=None,
+    )
+
+
+def _compute_risk_metrics_impl(cache: Cache, symbol: str,
+                                rf_annual: float = 0.0) -> RiskMetricsResponse:
+    closes = _series_for(cache, symbol)
+    if len(closes) < 2:
+        return RiskMetricsResponse(
+            symbol=symbol.upper(),
+            volatility_annualized=0.0, sharpe=None,
+            max_drawdown_pct=0.0, n_bars=int(len(closes)), rf_annual=rf_annual,
+            note=f"Need at least 2 bars; call refresh_history({symbol!r}).",
+        )
+    vol = volatility_annualized(closes)
+    sh = sharpe(closes, rf_annual=rf_annual)
+    mx = drawdown_max(closes)
+    return RiskMetricsResponse(
+        symbol=symbol.upper(),
+        volatility_annualized=vol, sharpe=sh,
+        max_drawdown_pct=mx["max_drawdown_pct"],
+        n_bars=int(len(closes)), rf_annual=rf_annual,
+        note=None,
+    )
+
+
+def _compute_relative_strength_impl(cache: Cache, symbol: str,
+                                     index_code: str = "KSE100",
+                                     window: int = 252) -> RelativeStrengthResponse:
+    # Date-align: only consider bars where BOTH stock and index have data.
+    stock_pairs = cache.closes_for_with_dates(symbol)
+    stock_by_date = dict(stock_pairs)
+    idx_rows = cache.get_index_history(index_code)
+    idx_by_date = {r["bar_date"]: r["close"] for r in idx_rows}
+    common_dates = sorted(set(stock_by_date) & set(idx_by_date))
+    if len(common_dates) < window + 1:
+        return RelativeStrengthResponse(
+            symbol=symbol.upper(), index_code=index_code, window=window,
+            relative_strength_pct=None,
+            stock_return_pct=None, index_return_pct=None,
+            n_bars=len(common_dates),
+            note=(f"Need at least window+1={window+1} aligned bars; have "
+                  f"{len(common_dates)}. Call refresh_history(symbol) and "
+                  f"refresh_market."),
+        )
+    stock_series = pd.Series([stock_by_date[d] for d in common_dates])
+    idx_series = pd.Series([idx_by_date[d] for d in common_dates])
+    rs = relative_strength(stock_series, idx_series, window=window)
+    stock_ret = float(stock_series.iloc[-1] / stock_series.iloc[-window - 1] - 1.0)
+    idx_ret = float(idx_series.iloc[-1] / idx_series.iloc[-window - 1] - 1.0)
+    return RelativeStrengthResponse(
+        symbol=symbol.upper(), index_code=index_code, window=window,
+        relative_strength_pct=rs,
+        stock_return_pct=stock_ret, index_return_pct=idx_ret,
+        n_bars=len(common_dates), note=None,
+    )
+
+
+def _compute_correlation_impl(cache: Cache, symbols: list[str]) -> CorrelationMatrixResponse:
+    syms_upper = [s.upper() for s in symbols]
+    closes_by = {s: pd.Series(cache.closes_for(s)) for s in syms_upper}
+    matrix = correlation_matrix(closes_by)
+    note = None
+    missing = [s for s, ser in closes_by.items() if len(ser) < 2]
+    if missing:
+        note = (f"Insufficient bars for: {missing}. "
+                f"Call refresh_history(symbol) for each.")
+    return CorrelationMatrixResponse(
+        symbols=syms_upper, matrix=matrix, note=note,
+    )
+
+
+@mcp.tool()
+async def compute_drawdown(symbol: str) -> DrawdownResponse:
+    """Current drawdown from peak and max drawdown over all cached bars."""
+    return _compute_drawdown_impl(_cache, symbol)
+
+
+@mcp.tool()
+async def compute_risk_metrics(symbol: str, rf_annual: float = 0.0) -> RiskMetricsResponse:
+    """Annualized volatility (sqrt(252) scaling), Sharpe ratio, and max drawdown.
+    rf_annual is the annual risk-free rate as a decimal (e.g., 0.22 for 22%
+    Pakistan T-bill yield). Default 0.0 = excess return == raw return."""
+    return _compute_risk_metrics_impl(_cache, symbol, rf_annual)
+
+
+@mcp.tool()
+async def compute_relative_strength(symbol: str, index_code: str = "KSE100",
+                                     window: int = 252) -> RelativeStrengthResponse:
+    """Stock return minus index return over the last `window` aligned trading days.
+    Positive = stock outperformed; negative = lagged. Uses cached bars_daily +
+    indices_history (call refresh_history and refresh_market first)."""
+    return _compute_relative_strength_impl(_cache, symbol, index_code, window)
+
+
+@mcp.tool()
+async def compute_correlation(symbols: list[str]) -> CorrelationMatrixResponse:
+    """Pairwise Pearson correlation of daily returns across the given symbols.
+    Useful for diversification: highly-correlated names (>0.8) provide little
+    diversification benefit; near-zero correlations diversify well."""
+    return _compute_correlation_impl(_cache, symbols)
 
 
 def _build_snapshot(cache: Cache, symbol: str) -> dict:
