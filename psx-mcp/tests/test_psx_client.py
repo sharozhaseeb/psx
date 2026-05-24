@@ -49,6 +49,25 @@ def test_parse_announcements_returns_items(fixtures_dir):
         assert a.title
 
 
+def test_parse_announcements_extracts_pdf_url(fixtures_dir):
+    """The action column has a PDF download link — that's the actionable URL,
+    not the symbol's company page. Body text is NOT in the HTML feed (PDF only),
+    so url must point at the disclosure PDF for users to read the announcement."""
+    items = parse_announcements(_read_any(fixtures_dir, "announcements"))
+    assert items, "fixture should produce announcements"
+    pdf_items = [a for a in items if a.url and a.url.endswith(".pdf")]
+    assert pdf_items, "expected at least one announcement with a PDF url"
+    # No item should have the symbol's /company/ page as its url —
+    # that's the bug we're fixing (parser was picking the first <a> in the row).
+    for a in items:
+        if a.url:
+            assert "/company/" not in a.url, (
+                f"announcement url should be the disclosure link, not the company page: {a.url}"
+            )
+    # Body intentionally None — HTML feed has no body text (see PSX endpoint matrix).
+    assert all(a.body is None for a in items)
+
+
 def test_parse_profile_extracts_fields(fixtures_dir):
     info = parse_profile("LUCK", (fixtures_dir / "profile_LUCK.html").read_text(encoding="utf-8"))
     assert info.symbol == "LUCK"

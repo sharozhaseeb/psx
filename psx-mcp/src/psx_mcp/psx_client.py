@@ -489,16 +489,28 @@ def parse_announcements(payload: str) -> list[Announcement]:
             except ValueError:
                 continue
 
-        # Get PDF link if available
-        tds = tr.find_all("td")
+        # Find the actionable disclosure link (the PDF in the action column).
+        # The row also contains /company/<SYM> anchors on the symbol/name cells —
+        # those are NOT what we want; the disclosure PDF is the useful link.
+        # Strategy: walk every <a> in the row, prefer PDF/download links, and
+        # fall back to any non-javascript link that isn't the company page.
         link = None
-        for td in tds:
-            a = td.find("a", href=True)
-            if a and a["href"] and not a["href"].startswith("javascript"):
-                link = a["href"]
-                if not link.startswith("http"):
-                    link = f"{BASE_DPS}{link}"
+        fallback = None
+        for a in tr.find_all("a", href=True):
+            href = a["href"]
+            if not href or href.startswith("javascript"):
+                continue
+            if "/company/" in href:
+                continue  # symbol/name cell, not the disclosure
+            if href.lower().endswith(".pdf") or "/download/" in href.lower():
+                link = href
                 break
+            if fallback is None:
+                fallback = href
+        if link is None:
+            link = fallback
+        if link and not link.startswith("http"):
+            link = f"{BASE_DPS}{link}"
 
         if sym and not sym.startswith("HTTP"):
             _push(sym=sym, title=title, posted=posted, url=link)

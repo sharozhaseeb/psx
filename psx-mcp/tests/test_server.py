@@ -241,6 +241,38 @@ def test_refresh_and_get_announcements(deps_with_client, fixtures_dir):
     assert isinstance(anns, list)
 
 
+def test_announcement_url_propagates_through_cache(tmp_path):
+    """The HTML feed has no body text — only a URL to a PDF disclosure.
+    Verify the URL is persisted via the cache and surfaced by
+    `_get_announcements_impl`, so users can read announcements via the link."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from psx_mcp.models import Announcement
+
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_announcement(Announcement(
+        id="X1",
+        symbol="SYS",
+        posted_at=datetime(2026, 5, 22, 16, 18),
+        title="Board meeting adjourned",
+        category=None,
+        url="https://dps.psx.com.pk/download/document/277743.pdf",
+        body=None,
+    ))
+    srv.set_dependencies(
+        cache=cache,
+        store=WatchlistStore(str(tmp_path / "w.json")),
+        client=None,
+    )
+    out = srv._get_announcements_impl(cache, "SYS", since_days=30)
+    assert len(out) == 1
+    assert out[0].url == "https://dps.psx.com.pk/download/document/277743.pdf"
+    # Body intentionally None — not in source feed; documented behavior.
+    assert out[0].body is None
+    assert out[0].title == "Board meeting adjourned"
+
+
 def test_watchlist_lifecycle(deps):
     e = deps._add_to_watchlist_impl(deps._store, "OGDC", "energy")
     assert e.symbol == "OGDC"
