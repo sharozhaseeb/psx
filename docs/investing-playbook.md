@@ -233,7 +233,7 @@ By this scorecard SYS and NETSOL are stronger picks than AIRLINK — consistent 
 |---|---|---|
 | `dps.psx.com.pk/sector-summary` | Sector-level P/E, market cap, breadth | Low — HTML scrape |
 | `dps.psx.com.pk/screener` | Pre-built filters (top dividend yield, top P/E, etc.) | Low |
-| `dps.psx.com.pk/historical` | OHLCV (already used) | Done |
+| `dps.psx.com.pk/historical` | OHLCV (already used) | Done. **Historical adjustment status: indeterminate** without a confirmed corporate-action ex-date — to be revisited when a known PSX bonus/split is documented in cached announcements. Probe 0.3 (SYS around 2024-04-25 placeholder) showed no obvious 20-50% close discontinuity, but the placeholder is unverified. |
 | `dps.psx.com.pk/announcements` | Corporate actions, board meetings (already used) | Done — but body text isn't being saved |
 | `dps.psx.com.pk/indices` | KSE-100, KSE-30, KMI-30, All-Share | Low — fix the null index data |
 | `dps.psx.com.pk/timeseries/eod/<INDEX>` | **JSON EOD series for an index** (confirmed via probe 2026-05-24: 200 OK, `application/json`, payload shape `{status, message, data:[[unix_ts, close, volume, ?metric], ...]}`) | Low — direct JSON, no scrape |
