@@ -176,19 +176,56 @@ async def _refresh_market_impl(cache: Cache, client: Optional[PSXClient]) -> int
             day_high=r["day_high"] or 0, day_low=r["day_low"] or 0,
             fetched_at=now,
         )
+    # Best-effort: also refresh the index snapshot. Don't fail the whole refresh
+    # if the indices endpoint hiccups — individual indices already get skipped.
+    try:
+        indices = await client.fetch_indices()
+        for idx in indices:
+            cache.upsert_index(
+                idx["code"], idx["value"], idx["change"],
+                idx["change_pct"], idx["refreshed_at"],
+            )
+        log.info("indices_refresh", count=len(indices))
+    except Exception as e:
+        log.warning("indices_refresh_failed", error=str(e))
     log.info("market_refresh", count=len(rows))
     return len(rows)
 
 
 def _get_market_summary_impl(cache: Cache) -> MarketSummary:
-    kse100_row = cache.get_latest_quote("KSE100")
+    snap = cache.index_snapshot()
+    kse100 = snap.get("KSE100", {})
+    kse30 = snap.get("KSE30", {})
+    allshr = snap.get("ALLSHR", {})
+
+    # Staleness: oldest refreshed_at across cached indices > 5 min ⇒ stale.
+    # No indices cached at all ⇒ stale.
+    if not snap:
+        stale = True
+    else:
+        oldest = min(v["refreshed_at"] for v in snap.values())
+        try:
+            stale = (datetime.now() - datetime.fromisoformat(oldest)).total_seconds() > 300
+        except (ValueError, TypeError):
+            stale = True
+
+    summary = (
+        f"KSE-100 at {kse100.get('value'):.2f} ({kse100.get('change_pct'):+.2f}%)"
+        if (not stale and kse100)
+        else "KSE-100 snapshot — call refresh_market() first if stale."
+    )
+
     return MarketSummary(
-        kse100=(kse100_row or {}).get("price") or 0.0,
-        kse100_change=(kse100_row or {}).get("change") or 0.0,
+        kse100=kse100.get("value") or 0.0,
+        kse100_change=kse100.get("change_pct") or 0.0,
+        kse30=kse30.get("value"),
+        kse30_change=kse30.get("change_pct"),
+        allshr=allshr.get("value"),
+        allshr_change=allshr.get("change_pct"),
         sectors=[],
         timestamp=datetime.now(),
-        stale=kse100_row is None,
-        summary="KSE-100 snapshot — call refresh_market() first if stale.",
+        stale=stale,
+        summary=summary,
     )
 
 

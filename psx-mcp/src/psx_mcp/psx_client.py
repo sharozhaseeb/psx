@@ -147,6 +147,54 @@ class PSXClient:
         """Same page as profile — company/<SYM> contains financial tables."""
         return await self._get(f"{BASE_DPS}/company/{symbol.upper()}")
 
+    async def fetch_indices(self, codes: Optional[list[str]] = None) -> list[dict]:
+        """Fetch latest snapshot for each PSX index via /timeseries/eod/<INDEX>.
+
+        Returns list of dicts: {code, value, change, change_pct, volume, refreshed_at}.
+        Resilient: indices that fail individually are skipped (others still returned).
+
+        Note: PSX EOD time-series is returned NEWEST-FIRST, so the latest snapshot
+        is rows[0] and the previous close is rows[1][1].
+        """
+        if codes is None:
+            codes = ["KSE100", "KSE30", "ALLSHR"]
+        out: list[dict] = []
+        for code in codes:
+            try:
+                payload = await self._get(f"{BASE_DPS}/timeseries/eod/{code}")
+                data, _ = _try_json(payload)
+                if not isinstance(data, dict):
+                    continue
+                rows = data.get("data") or []
+                if not rows:
+                    continue
+                latest = rows[0]
+                close = _f(latest[1])
+                if close is None:
+                    continue
+                volume = _f(latest[2]) if len(latest) > 2 else None
+                prev_close = (
+                    _f(rows[1][1]) if len(rows) >= 2 and len(rows[1]) >= 2 else None
+                )
+                if prev_close and prev_close > 0:
+                    change = close - prev_close
+                    change_pct = change / prev_close * 100
+                else:
+                    change = 0.0
+                    change_pct = 0.0
+                out.append({
+                    "code": code,
+                    "value": close,
+                    "change": change,
+                    "change_pct": change_pct,
+                    "volume": volume or 0.0,
+                    "refreshed_at": datetime.now().isoformat(),
+                })
+            except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError) as e:
+                log.warning("index_fetch_failed", code=code, error=str(e))
+                continue
+        return out
+
 
 # ---------- shared helpers ----------
 

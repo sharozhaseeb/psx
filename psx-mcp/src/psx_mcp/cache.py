@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS news (
   id TEXT PRIMARY KEY, source TEXT, posted_at TEXT,
   title TEXT, url TEXT, symbols TEXT
 );
+CREATE TABLE IF NOT EXISTS indices (
+  index_code TEXT PRIMARY KEY,
+  value REAL NOT NULL,
+  change REAL,
+  change_pct REAL,
+  refreshed_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_bars_symbol_date ON bars_daily(symbol, date DESC);
 CREATE INDEX IF NOT EXISTS idx_anns_symbol_posted ON announcements(symbol, posted_at DESC);
 """
@@ -287,6 +294,34 @@ class Cache:
             (id, source, _iso(posted_at), title, url, ",".join(s.upper() for s in symbols)),
         )
         self.conn.commit()
+
+    # ---- indices ----
+    def upsert_index(self, code: str, value: float, change: Optional[float],
+                     change_pct: Optional[float], refreshed_at: str) -> None:
+        self.conn.execute(
+            """INSERT INTO indices(index_code, value, change, change_pct, refreshed_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(index_code) DO UPDATE SET
+                 value=excluded.value, change=excluded.change,
+                 change_pct=excluded.change_pct,
+                 refreshed_at=excluded.refreshed_at""",
+            (code.upper(), value, change, change_pct, refreshed_at),
+        )
+        self.conn.commit()
+
+    def index_snapshot(self) -> dict[str, dict]:
+        rows = self.conn.execute(
+            "SELECT index_code, value, change, change_pct, refreshed_at FROM indices"
+        ).fetchall()
+        return {
+            r["index_code"]: {
+                "value": r["value"],
+                "change": r["change"],
+                "change_pct": r["change_pct"],
+                "refreshed_at": r["refreshed_at"],
+            }
+            for r in rows
+        }
 
     def get_news(self, *, symbol: Optional[str] = None,
                  since: Optional[datetime] = None) -> list[dict]:
