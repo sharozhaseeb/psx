@@ -223,3 +223,21 @@ def test_fifty_two_week_handles_partial_history(cache):
     hi, lo = cache.fifty_two_week("ABC")
     assert hi == 119.0  # 110 + 9
     assert lo == 81.0   # 90 - 9
+
+
+def test_closes_for_with_dates_returns_ordered_pairs(tmp_path):
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=4 - i),
+                open=100.0, high=110.0, low=90.0, close=100.0 + i, volume=1000)
+            for i in range(5)]
+    cache.upsert_bars(bars)
+    out = cache.closes_for_with_dates("XYZ")
+    assert len(out) == 5
+    dates = [d for d, _ in out]
+    assert dates == sorted(dates)
+    closes = [c for _, c in out]
+    assert closes == [100.0, 101.0, 102.0, 103.0, 104.0]

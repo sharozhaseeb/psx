@@ -270,6 +270,14 @@ class Cache:
         rows = self.conn.execute(sql, params).fetchall()
         return [r["close"] for r in rows]
 
+    def closes_for_with_dates(self, symbol: str) -> list[tuple[str, float]]:
+        """Return [(iso_date, close), ...] for symbol, oldest first."""
+        rows = self.conn.execute(
+            "SELECT date, close FROM bars_daily WHERE symbol=? ORDER BY date ASC",
+            (symbol.upper(),),
+        ).fetchall()
+        return [(r["date"], r["close"]) for r in rows]
+
     def closes_for_many(self, symbols: list[str]) -> dict[str, list[float]]:
         """Return {symbol: [closes_ascending], ...} for the given symbols.
         Symbols with no bars get an empty list (never missing-key)."""

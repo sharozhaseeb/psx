@@ -666,19 +666,12 @@ def _compute_beta_impl(cache: Cache, symbol: str,
                        window: int = 252) -> BetaResponse:
     """Date-align stock bars and index EOD history, then OLS on returns.
 
-    Both `closes_for` and `get_index_history` return oldest-first. We intersect
-    on date to compute aligned returns — required because stock and index may
-    have different trading-day coverage in the cache.
+    Both `closes_for_with_dates` and `get_index_history` return oldest-first.
+    We intersect on date to compute aligned returns — required because stock
+    and index may have different trading-day coverage in the cache.
     """
-    # NOTE: Raw cache.conn.execute is used here because closes_for(symbol)
-    # only returns floats without dates, and we need date-aligned pairs.
-    # TODO (Part 3): add Cache.closes_for_with_dates(symbol) helper and switch
-    # this back to use it — keeps the Phase-1 layering refactor intact.
-    stock_rows = cache.conn.execute(
-        "SELECT date, close FROM bars_daily WHERE symbol=? ORDER BY date ASC",
-        (symbol.upper(),),
-    ).fetchall()
-    stock_by_date = {r["date"]: r["close"] for r in stock_rows}
+    stock_pairs = cache.closes_for_with_dates(symbol)
+    stock_by_date = dict(stock_pairs)
     idx_rows = cache.get_index_history(index_code)
     idx_by_date = {r["bar_date"]: r["close"] for r in idx_rows}
     common_dates = sorted(set(stock_by_date) & set(idx_by_date))
@@ -691,7 +684,7 @@ def _compute_beta_impl(cache: Cache, symbol: str,
                   f"Call refresh_history({symbol!r}) and refresh_market first."),
         )
     stock_closes = pd.Series([stock_by_date[d] for d in common_dates])
-    idx_closes   = pd.Series([idx_by_date[d]   for d in common_dates])
+    idx_closes = pd.Series([idx_by_date[d] for d in common_dates])
     result = beta(stock_closes=stock_closes, index_closes=idx_closes, window=window)
     return BetaResponse(
         symbol=symbol.upper(), index_code=index_code, window=window,
