@@ -839,3 +839,36 @@ def test_refresh_universe_no_client_returns_note(tmp_path):
     assert out.failed == []
     assert out.note is not None
     assert "no psx client" in out.note.lower()
+
+
+def test_get_upcoming_events_filters_by_title_keywords(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Announcement
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    now = datetime.now()
+    cache.upsert_announcement(Announcement(
+        id="A1", symbol="SYS", posted_at=now - timedelta(days=2),
+        title="Notice of Board Meeting on 30 May 2026",
+        category=None, url=None, body=None,
+    ))
+    cache.upsert_announcement(Announcement(
+        id="A2", symbol="SYS", posted_at=now - timedelta(days=2),
+        title="Disclosure of Interest by Director",
+        category=None, url=None, body=None,
+    ))
+    cache.upsert_announcement(Announcement(
+        id="A3", symbol="LUCK", posted_at=now - timedelta(days=10),
+        title="Board Meeting Other Than Financial Results",
+        category=None, url=None, body=None,
+    ))
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_upcoming_events_impl(cache, lookback_days=7)
+    titles = [e["title"] for e in out.events]
+    assert any("Board Meeting on 30 May" in t for t in titles)
+    assert all("Disclosure of Interest" not in t for t in titles)
+    # A3 is older than 7 days → excluded
+    assert all("Other Than Financial" not in t for t in titles)

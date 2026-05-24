@@ -412,6 +412,12 @@ class BulkRefreshResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class UpcomingEventsResponse(Disclaimer):
+    lookback_days: int
+    events: list[dict]
+    note: Optional[str] = None
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str

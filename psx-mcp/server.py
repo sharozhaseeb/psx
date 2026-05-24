@@ -1,5 +1,6 @@
 """PSX MCP server — FastMCP entrypoint with sync impl helpers + async tool wrappers."""
 from __future__ import annotations
+import re as _re
 import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
@@ -31,6 +32,7 @@ from psx_mcp.models import (
     SectorRankResponse, UniverseRankResponse,
     FullAnalysisResponse, PositionSizeResponse,
     CacheStatusResponse, BulkRefreshResponse,
+    UpcomingEventsResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.ranking import (
@@ -1239,6 +1241,52 @@ async def refresh_universe(symbols: list[str] | None = None,
        3. else all symbols with cached quotes.
     Slow on the full universe. Use sparingly or pre-filter via `sector`."""
     return await _refresh_universe_impl(_cache, _client, symbols, sector)
+
+
+# ---- upcoming corporate events (heuristic, title-pattern based) ----
+
+UPCOMING_EVENT_PATTERNS = [
+    r"\bboard\s+meeting\b",
+    r"\bagm\b", r"\bextraordinary\s+general\s+meeting\b", r"\begm\b",
+    r"\bfinancial\s+results?\b",
+    r"\bcorporate\s+briefing\b", r"\bcbs\b",
+    r"\bex[- ]?date\b", r"\bbook\s+closure\b",
+]
+_UPCOMING_RE = _re.compile("|".join(UPCOMING_EVENT_PATTERNS), _re.I)
+
+
+def _get_upcoming_events_impl(cache: Cache, lookback_days: int = 14) -> UpcomingEventsResponse:
+    """Heuristic 'upcoming events' tool: returns announcements posted in the last
+    `lookback_days` whose title matches a curated set of corporate-action
+    patterns (Board Meeting, AGM, EGM, Financial Results, Corporate Briefing,
+    Ex-Date, Book Closure). Without parsing announcement PDFs we cannot extract
+    the actual scheduled date; the user must read the announcement for that."""
+    since = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+    rows = cache.conn.execute(
+        "SELECT symbol, title, posted_at, url FROM announcements "
+        "WHERE posted_at >= ? ORDER BY posted_at DESC",
+        (since,),
+    ).fetchall()
+    events = []
+    for r in rows:
+        title = r["title"] or ""
+        if _UPCOMING_RE.search(title):
+            events.append(dict(r))
+    note = None
+    if not events:
+        note = (f"No matching announcements in the last {lookback_days} days. "
+                f"Try a wider lookback or call refresh_announcements first.")
+    return UpcomingEventsResponse(lookback_days=lookback_days, events=events,
+                                   note=note)
+
+
+@mcp.tool()
+async def get_upcoming_events(lookback_days: int = 14) -> UpcomingEventsResponse:
+    """Surface recently-posted announcements that imply upcoming corporate
+    actions (Board Meeting, AGM/EGM, Financial Results, CBS, Ex-Date, Book
+    Closure). Heuristic — title-pattern based; actual event dates require
+    reading the announcement PDF via its url."""
+    return _get_upcoming_events_impl(_cache, lookback_days)
 
 
 if __name__ == "__main__":
