@@ -42,6 +42,30 @@ CREATE TABLE IF NOT EXISTS indices (
 );
 CREATE INDEX IF NOT EXISTS idx_bars_symbol_date ON bars_daily(symbol, date DESC);
 CREATE INDEX IF NOT EXISTS idx_anns_symbol_posted ON announcements(symbol, posted_at DESC);
+CREATE TABLE IF NOT EXISTS fundamentals_history (
+  symbol TEXT NOT NULL,
+  fiscal_year INTEGER NOT NULL,
+  eps REAL,
+  pe REAL,
+  pb REAL,
+  div_yield REAL,
+  payout REAL,
+  roe REAL,
+  gross_margin REAL,
+  net_income REAL,
+  cfo REAL,
+  revenue REAL,
+  total_assets REAL,
+  long_term_debt REAL,
+  current_liab REAL,
+  current_assets REAL,
+  shares_outstanding REAL,
+  source_url TEXT,
+  refreshed_at TEXT NOT NULL,
+  PRIMARY KEY(symbol, fiscal_year)
+);
+CREATE INDEX IF NOT EXISTS idx_fundh_symbol_year
+  ON fundamentals_history(symbol, fiscal_year DESC);
 """
 
 
@@ -333,6 +357,45 @@ class Cache:
             return None
         t = datetime.fromisoformat(f["refreshed_at"])
         return (datetime.now() - t).total_seconds()
+
+    # ---- fundamentals history (multi-year) ----
+    def upsert_fundamentals_history(self, *, symbol: str, fiscal_year: int,
+                                    eps, pe, pb, div_yield, payout, roe,
+                                    gross_margin, net_income, cfo, revenue,
+                                    total_assets, long_term_debt,
+                                    current_liab, current_assets, shares_outstanding,
+                                    source_url, refreshed_at) -> None:
+        self.conn.execute(
+            """INSERT INTO fundamentals_history
+               (symbol, fiscal_year, eps, pe, pb, div_yield, payout, roe,
+                gross_margin, net_income, cfo, revenue,
+                total_assets, long_term_debt, current_liab,
+                current_assets, shares_outstanding, source_url, refreshed_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(symbol, fiscal_year) DO UPDATE SET
+                 eps=excluded.eps, pe=excluded.pe, pb=excluded.pb,
+                 div_yield=excluded.div_yield, payout=excluded.payout, roe=excluded.roe,
+                 gross_margin=excluded.gross_margin,
+                 net_income=excluded.net_income, cfo=excluded.cfo, revenue=excluded.revenue,
+                 total_assets=excluded.total_assets,
+                 long_term_debt=excluded.long_term_debt, current_liab=excluded.current_liab,
+                 current_assets=excluded.current_assets,
+                 shares_outstanding=excluded.shares_outstanding,
+                 source_url=excluded.source_url, refreshed_at=excluded.refreshed_at""",
+            (symbol.upper(), fiscal_year, eps, pe, pb, div_yield, payout, roe,
+             gross_margin, net_income, cfo, revenue,
+             total_assets, long_term_debt, current_liab,
+             current_assets, shares_outstanding, source_url, _iso(refreshed_at)),
+        )
+        self.conn.commit()
+
+    def get_fundamentals_history(self, symbol: str) -> list[dict]:
+        """Return all cached fiscal-year snapshots for symbol, newest year first."""
+        rows = self.conn.execute(
+            "SELECT * FROM fundamentals_history WHERE symbol=? ORDER BY fiscal_year DESC",
+            (symbol.upper(),),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     # ---- news ----
     def upsert_news(self, *, id: str, source: str, posted_at: datetime,
