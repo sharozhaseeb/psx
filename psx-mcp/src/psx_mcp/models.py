@@ -148,6 +148,13 @@ class FundamentalsHistoryPoint(BaseModel):
         return v.strip().upper() if isinstance(v, str) else v
 
 
+class IndexHistoryPoint(BaseModel):
+    index_code: str
+    bar_date: date  # schema declares NOT NULL, so always present
+    close: float
+    volume: Optional[float] = None
+
+
 class FinancialStatement(BaseModel):
     symbol: str
     period: Literal["annual", "quarterly"]

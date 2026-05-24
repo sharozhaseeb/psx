@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS fundamentals_history (
 );
 CREATE INDEX IF NOT EXISTS idx_fundh_symbol_year
   ON fundamentals_history(symbol, fiscal_year DESC);
+CREATE TABLE IF NOT EXISTS indices_history (
+  index_code TEXT NOT NULL,
+  bar_date TEXT NOT NULL,
+  close REAL NOT NULL,
+  volume REAL,
+  PRIMARY KEY(index_code, bar_date)
+);
+CREATE INDEX IF NOT EXISTS idx_idxh_code_date
+  ON indices_history(index_code, bar_date);
 """
 
 
@@ -437,6 +446,49 @@ class Cache:
             }
             for r in rows
         }
+
+    # ---- indices history (EOD bars per index) ----
+    def upsert_index_bar(self, *, index_code: str, bar_date,
+                         close: float, volume) -> None:
+        self.conn.execute(
+            """INSERT INTO indices_history (index_code, bar_date, close, volume)
+               VALUES(?,?,?,?)
+               ON CONFLICT(index_code, bar_date) DO UPDATE SET
+                 close=excluded.close, volume=excluded.volume""",
+            (index_code, _iso(bar_date), close, volume),
+        )
+        self.conn.commit()
+
+    def upsert_index_bars_bulk(self, index_code: str,
+                               bars: list[dict]) -> int:
+        """bars: [{bar_date: date, close: float, volume: float|None}, ...].
+        Returns count of rows passed in (per-call, NOT connection-cumulative)."""
+        self.conn.executemany(
+            """INSERT INTO indices_history (index_code, bar_date, close, volume)
+               VALUES(?,?,?,?)
+               ON CONFLICT(index_code, bar_date) DO UPDATE SET
+                 close=excluded.close, volume=excluded.volume""",
+            [(index_code, _iso(b["bar_date"]), b["close"], b.get("volume")) for b in bars],
+        )
+        self.conn.commit()
+        return len(bars)
+
+    def get_index_history(self, index_code: str,
+                          since: Optional[str] = None) -> list[dict]:
+        """Return all (or since onward) EOD bars for an index, oldest first.
+        `since` is a YYYY-MM-DD string."""
+        if since:
+            rows = self.conn.execute(
+                """SELECT * FROM indices_history WHERE index_code=? AND bar_date>=?
+                   ORDER BY bar_date ASC""",
+                (index_code, since),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM indices_history WHERE index_code=? ORDER BY bar_date ASC",
+                (index_code,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_news(self, *, symbol: Optional[str] = None,
                  since: Optional[datetime] = None) -> list[dict]:

@@ -195,6 +195,38 @@ class PSXClient:
                 continue
         return out
 
+    async def fetch_index_eod_history(self, code: str) -> list[dict]:
+        """Fetch the full EOD timeseries for an index. Returns
+        [{bar_date: date, close: float, volume: float|None}, ...] sorted oldest first.
+        Uses /timeseries/eod/<INDEX> JSON endpoint. Payload is newest-first; we reverse.
+        """
+        payload_str = await self._get(f"{BASE_DPS}/timeseries/eod/{code.upper()}")
+        payload, _ = _try_json(payload_str)
+        if not isinstance(payload, dict):
+            return []
+        raw_rows = payload.get("data") or []
+        bars: list[dict] = []
+        for row in reversed(raw_rows):
+            if not row or len(row) < 2:
+                continue
+            try:
+                ts = int(row[0])
+                close = float(row[1])
+            except (ValueError, TypeError):
+                continue
+            vol: Optional[float] = None
+            if len(row) >= 3:
+                try:
+                    vol = float(row[2])
+                except (ValueError, TypeError):
+                    vol = None
+            bars.append({
+                "bar_date": datetime.fromtimestamp(ts, tz=timezone.utc).date(),
+                "close": close,
+                "volume": vol,
+            })
+        return bars
+
 
 # ---------- shared helpers ----------
 

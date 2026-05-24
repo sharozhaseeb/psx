@@ -202,3 +202,86 @@ def test_get_market_summary_empty_cache_is_stale(tmp_path):
     assert out.kse100 == 0.0
     assert out.kse30 is None
     assert out.allshr is None
+
+
+# ---------- indices_history (EOD bars per index) ----------
+
+def test_index_history_eod_round_trip(tmp_path):
+    from psx_mcp.cache import Cache
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_index_bar(index_code="KSE100", bar_date=date(2026, 5, 22),
+                           close=170000.0, volume=110_000_000)
+    cache.upsert_index_bar(index_code="KSE100", bar_date=date(2026, 5, 21),
+                           close=168500.0, volume=100_000_000)
+    rows = cache.get_index_history("KSE100")
+    assert len(rows) == 2
+    # Oldest first
+    assert rows[0]["close"] == 168500.0
+    assert rows[1]["close"] == 170000.0
+
+
+def test_index_history_upsert_replaces_same_date(tmp_path):
+    from psx_mcp.cache import Cache
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    for close in (170000.0, 170500.0):
+        cache.upsert_index_bar(index_code="KSE100", bar_date=date(2026, 5, 22),
+                               close=close, volume=110_000_000)
+    rows = cache.get_index_history("KSE100")
+    assert len(rows) == 1
+    assert rows[0]["close"] == 170500.0
+
+
+def test_fetch_index_eod_history_parses_full_payload(monkeypatch):
+    """Full EOD timeseries -> list of dated bars, oldest first."""
+    import asyncio
+    from psx_mcp.psx_client import PSXClient
+    fake = {"data": [
+        [1779447600, 167844.24, 170376043, 169539.16],  # newer
+        [1779361200, 168514.44, 165000000, 168000.00],
+        [1779274800, 164831.42, 160000000, 164000.00],  # older
+    ]}
+    async def fake_get(self, url):
+        import json as _j
+        return _j.dumps(fake)
+    monkeypatch.setattr(PSXClient, "_get", fake_get)
+    bars = asyncio.run(PSXClient().fetch_index_eod_history("KSE100"))
+    assert len(bars) == 3
+    assert bars[0]["close"] == 164831.42  # oldest first after reversal
+    assert bars[-1]["close"] == 167844.24
+    assert bars[0]["bar_date"] < bars[-1]["bar_date"]
+
+
+def test_get_index_history_after_refresh(tmp_path, monkeypatch):
+    """End-to-end: fake fetch_index_eod_history, refresh_market, then get_index_history."""
+    import asyncio
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.psx_client import PSXClient
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+
+    async def fake_market(self):
+        return "<table></table>"  # empty market-watch HTML; parse returns 0 rows
+    async def fake_indices(self, codes=None):
+        return []  # no snapshot - just exercise the history branch
+    async def fake_eod(self, code):
+        from datetime import date as _d
+        return [
+            {"bar_date": _d(2026, 5, 20), "close": 168000.0, "volume": 1e8},
+            {"bar_date": _d(2026, 5, 21), "close": 168500.0, "volume": 1e8},
+            {"bar_date": _d(2026, 5, 22), "close": 170000.0, "volume": 1.1e8},
+        ]
+    monkeypatch.setattr(PSXClient, "fetch_market_watch", fake_market)
+    monkeypatch.setattr(PSXClient, "fetch_indices", fake_indices)
+    monkeypatch.setattr(PSXClient, "fetch_index_eod_history", fake_eod)
+
+    client = PSXClient()
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=client)
+    asyncio.run(srv._refresh_market_impl(cache, client))
+    rows = srv._get_index_history_impl(cache, "KSE100")
+    assert len(rows) == 3
+    assert rows[0].close == 168000.0
+    assert rows[-1].close == 170000.0

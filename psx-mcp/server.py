@@ -20,10 +20,10 @@ from psx_mcp.alerts import run_alerts
 from psx_mcp.news import FEEDS, parse_rss, find_symbol_mentions
 from psx_mcp.models import (
     Quote, Bar, SymbolMatch, MarketSummary, Mover, CompanyInfo, Fundamentals,
-    FundamentalsHistoryPoint, FinancialStatement, Announcement, NewsItem,
-    WatchEntry, AlertRule, AlertCondition, AlertHit, VolumeSpike,
-    ComparisonTable, ComparisonRow, ScreenResponse, SectorSummaryResponse,
-    DEFAULT_DISCLAIMER,
+    FundamentalsHistoryPoint, IndexHistoryPoint, FinancialStatement,
+    Announcement, NewsItem, WatchEntry, AlertRule, AlertCondition, AlertHit,
+    VolumeSpike, ComparisonTable, ComparisonRow, ScreenResponse,
+    SectorSummaryResponse, DEFAULT_DISCLAIMER,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.logging_config import configure_logging, get_logger
@@ -188,6 +188,14 @@ async def _refresh_market_impl(cache: Cache, client: Optional[PSXClient]) -> int
                 idx["change_pct"], idx["refreshed_at"],
             )
         log.info("indices_refresh", count=len(indices))
+        # Also populate per-index EOD history (one row per trading day).
+        for code in ("KSE100", "KSE30", "ALLSHR"):
+            try:
+                bars = await client.fetch_index_eod_history(code)
+                if bars:
+                    cache.upsert_index_bars_bulk(code, bars)
+            except Exception:
+                continue  # one failed index doesn't kill the rest
     except Exception as e:
         log.warning("indices_refresh_failed", error=str(e))
     log.info("market_refresh", count=len(rows))
@@ -241,6 +249,12 @@ def _get_top_movers_impl(cache: Cache, kind: str = "gainers", limit: int = 10) -
     return [Mover(**m) for m in movers[key]]
 
 
+def _get_index_history_impl(cache: Cache, index_code: str,
+                            since: Optional[str] = None) -> list[IndexHistoryPoint]:
+    rows = cache.get_index_history(index_code, since=since)
+    return [IndexHistoryPoint(**r) for r in rows]
+
+
 @mcp.tool()
 async def refresh_market() -> int:
     """Force a refresh of the market-watch snapshot. Returns quotes upserted."""
@@ -257,6 +271,15 @@ async def get_market_summary() -> MarketSummary:
 async def get_top_movers(kind: str = "gainers", limit: int = 10) -> list[Mover]:
     """kind: 'gainers' | 'losers' | 'volume'."""
     return _get_top_movers_impl(_cache, kind, limit)
+
+
+@mcp.tool()
+async def get_index_history(index_code: str = "KSE100",
+                            since: Optional[str] = None) -> list[IndexHistoryPoint]:
+    """Cached EOD index history (one row per trading day).
+    `since` is a YYYY-MM-DD string; omit for full history.
+    Populated from /timeseries/eod/<INDEX> on every refresh_market."""
+    return _get_index_history_impl(_cache, index_code, since)
 
 
 async def _get_company_info_impl(cache: Cache, client: Optional[PSXClient], symbol: str) -> CompanyInfo:
