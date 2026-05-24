@@ -291,6 +291,13 @@ class SectorSummaryResponse(Disclaimer):
     bottom_5_by_change: list[dict] = []
 
 
+class SectorRankResponse(Disclaimer):
+    metric: str
+    desc: bool
+    rows: list[dict]
+    note: Optional[str] = None
+
+
 class BetaResponse(Disclaimer):
     symbol: str
     index_code: str

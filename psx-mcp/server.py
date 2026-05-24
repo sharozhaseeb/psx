@@ -27,8 +27,10 @@ from psx_mcp.models import (
     QuadrantScoreResponse, DividendEvent, DEFAULT_DISCLAIMER,
     DrawdownResponse, RiskMetricsResponse,
     RelativeStrengthResponse, CorrelationMatrixResponse,
+    SectorRankResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
+from psx_mcp.ranking import rank_sectors as _rank_sectors_pure
 from psx_mcp.beta import beta
 from psx_mcp.risk import (
     drawdown_current, drawdown_max,
@@ -666,6 +668,35 @@ async def get_sector_summary(sector: str) -> SectorSummaryResponse:
     quick triage before drilling into individual names.
     """
     return _get_sector_summary_impl(_cache, sector)
+
+
+DEFAULT_SECTORS = [
+    "TECHNOLOGY & COMMUNICATION", "CEMENT",
+    "OIL & GAS EXPLORATION COMPANIES", "OIL & GAS MARKETING COMPANIES",
+    "COMMERCIAL BANKS", "FERTILIZER",
+    "POWER GENERATION & DISTRIBUTION",
+    "AUTOMOBILE ASSEMBLER", "FOOD & PERSONAL CARE PRODUCTS",
+    "PHARMACEUTICALS", "TEXTILE COMPOSITE",
+    "CHEMICAL", "REFINERY",
+]
+
+
+def _rank_sectors_impl(cache: Cache, sectors: list[str] | None,
+                       by: str = "avg_change_pct",
+                       desc: bool = True) -> SectorRankResponse:
+    sectors = sectors or DEFAULT_SECTORS
+    rows = _rank_sectors_pure(cache, sectors, by=by, desc=desc)
+    return SectorRankResponse(metric=by, desc=desc, rows=rows, note=None)
+
+
+@mcp.tool()
+async def rank_sectors(sectors: list[str] | None = None,
+                       by: str = "avg_change_pct",
+                       desc: bool = True) -> SectorRankResponse:
+    """Rank PSX sectors by an aggregate metric. Default: 13 major sectors.
+    Valid `by`: 'avg_change_pct' (today's mood), 'median_pe' (relative valuation),
+    'pct_above_sma200' (breadth/trend strength), 'n' (member count)."""
+    return _rank_sectors_impl(_cache, sectors, by, desc)
 
 
 def _compute_beta_impl(cache: Cache, symbol: str,
