@@ -11,7 +11,7 @@ from psx_mcp.cache import Cache
 from psx_mcp.watchlist import WatchlistStore
 from psx_mcp.psx_client import (
     PSXClient, parse_market_watch, parse_historical, parse_announcements,
-    parse_profile, parse_financials, parse_financial_statements,
+    parse_profile, parse_financials, parse_financial_statements, parse_payouts,
 )
 from psx_mcp.symbols import search_symbols
 from psx_mcp.indicators import rsi, sma, ema, macd, bollinger, volume_zscore, atr
@@ -24,7 +24,7 @@ from psx_mcp.models import (
     Announcement, NewsItem, WatchEntry, AlertRule, AlertCondition, AlertHit,
     VolumeSpike, ComparisonTable, ComparisonRow, ScreenResponse,
     SectorSummaryResponse, BetaResponse, QualityScoreResponse,
-    QuadrantScoreResponse, DEFAULT_DISCLAIMER,
+    QuadrantScoreResponse, DividendEvent, DEFAULT_DISCLAIMER,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.beta import beta
@@ -772,6 +772,37 @@ async def compute_quality_score(symbol: str) -> QualityScoreResponse:
 async def compute_4quadrant_score(symbol: str) -> QuadrantScoreResponse:
     """Composite Value/Quality/Momentum/Trend score (0..4). 3+ = high-conviction."""
     return _compute_4quadrant_score_impl(_cache, symbol)
+
+
+# ---- dividends ----
+
+async def _refresh_dividends_impl(cache: Cache, client: PSXClient,
+                                   symbol: str) -> int:
+    """Fetch & cache dividend history for one symbol. Returns count upserted."""
+    html = await client.fetch_company_payouts(symbol)
+    events = parse_payouts(symbol, html)
+    for e in events:
+        cache.upsert_dividend(**e)
+    return len(events)
+
+
+def _get_dividend_history_impl(cache: Cache, symbol: str) -> list[DividendEvent]:
+    rows = cache.get_dividend_history(symbol)
+    return [DividendEvent(**r) for r in rows]
+
+
+@mcp.tool()
+async def refresh_dividends(symbol: str) -> int:
+    """Refresh dividend history for one symbol from PSX /company/payouts.
+    Returns count of dividend events cached."""
+    return await _refresh_dividends_impl(_cache, _client, symbol)
+
+
+@mcp.tool()
+async def get_dividend_history(symbol: str) -> list[DividendEvent]:
+    """Cached dividend events for symbol, newest ex-date first.
+    Call refresh_dividends(symbol) first to populate."""
+    return _get_dividend_history_impl(_cache, symbol)
 
 
 if __name__ == "__main__":

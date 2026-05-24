@@ -91,3 +91,28 @@ def test_parse_financial_statements_returns_list(fixtures_dir):
     if out:
         assert out[0].symbol == "LUCK"
         assert out[0].period == "annual"
+
+
+def test_parse_payouts_extracts_events_from_FFC_fixture(fixtures_dir):
+    from psx_mcp.psx_client import parse_payouts
+    html = (fixtures_dir / "payouts_FFC.html").read_text(encoding="utf-8")
+    events = parse_payouts("FFC", html)
+    assert len(events) >= 1
+    e = events[0]
+    assert e["announcement_id"].startswith("FFC-")
+    assert e["symbol"] == "FFC"
+    assert e["payout_type"] in ("cash", "bonus", "right")
+    assert e["per_share"] is not None or e["bonus_pct"] is not None
+
+
+def test_parse_payouts_single_row_fixture(fixtures_dir):
+    """LUCK pays once annually — confirm single-row fixture parses."""
+    from psx_mcp.psx_client import parse_payouts
+    html = (fixtures_dir / "payouts_LUCK.html").read_text(encoding="utf-8")
+    events = parse_payouts("LUCK", html)
+    assert len(events) >= 1
+
+
+def test_parse_payouts_empty_html_returns_empty(fixtures_dir):
+    from psx_mcp.psx_client import parse_payouts
+    assert parse_payouts("XXX", "<html></html>") == []

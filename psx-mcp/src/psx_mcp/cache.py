@@ -75,6 +75,17 @@ CREATE TABLE IF NOT EXISTS indices_history (
 );
 CREATE INDEX IF NOT EXISTS idx_idxh_code_date
   ON indices_history(index_code, bar_date);
+CREATE TABLE IF NOT EXISTS dividends (
+  announcement_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  ex_date TEXT,
+  announcement_date TEXT,
+  payout_type TEXT,
+  per_share REAL,
+  bonus_pct REAL
+);
+CREATE INDEX IF NOT EXISTS idx_div_symbol_exdate
+  ON dividends(symbol, ex_date DESC);
 """
 
 
@@ -508,3 +519,30 @@ class Cache:
                 continue
             out.append(d)
         return out
+
+    # ---- dividends ----
+    def upsert_dividend(self, *, symbol: str, ex_date, announcement_date,
+                        payout_type: str, per_share, bonus_pct,
+                        announcement_id: str) -> None:
+        self.conn.execute(
+            """INSERT INTO dividends
+               (announcement_id, symbol, ex_date, announcement_date,
+                payout_type, per_share, bonus_pct)
+               VALUES(?,?,?,?,?,?,?)
+               ON CONFLICT(announcement_id) DO UPDATE SET
+                 ex_date=excluded.ex_date,
+                 announcement_date=excluded.announcement_date,
+                 payout_type=excluded.payout_type,
+                 per_share=excluded.per_share, bonus_pct=excluded.bonus_pct""",
+            (announcement_id, symbol.upper(), _iso(ex_date), _iso(announcement_date),
+             payout_type, per_share, bonus_pct),
+        )
+        self.conn.commit()
+
+    def get_dividend_history(self, symbol: str) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT * FROM dividends WHERE symbol=?
+               ORDER BY COALESCE(ex_date, announcement_date) DESC""",
+            (symbol.upper(),),
+        ).fetchall()
+        return [dict(r) for r in rows]

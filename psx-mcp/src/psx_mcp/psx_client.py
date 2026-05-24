@@ -147,6 +147,13 @@ class PSXClient:
         """Same page as profile — company/<SYM> contains financial tables."""
         return await self._get(f"{BASE_DPS}/company/{symbol.upper()}")
 
+    async def fetch_company_payouts(self, symbol: str) -> str:
+        """POST /company/payouts with symbol= returns HTML table of dividend events."""
+        return await self._post(
+            f"{BASE_DPS}/company/payouts",
+            {"symbol": symbol.upper()},
+        )
+
     async def fetch_indices(self, codes: Optional[list[str]] = None) -> list[dict]:
         """Fetch latest snapshot for each PSX index via /timeseries/eod/<INDEX>.
 
@@ -777,3 +784,88 @@ def parse_financial_statements(symbol: str, period: str, html: str) -> list[Fina
                     symbol=symbol.upper(), period=period, period_end=pe, line_items=items,
                 ))
     return statements
+
+
+def parse_payouts(symbol: str, html: str) -> list[dict]:
+    """Extract dividend events from PSX /company/payouts HTML.
+
+    CONTRACT: each returned dict has EXACTLY these keys (matching upsert_dividend
+    kwargs verbatim):
+      announcement_id (str), symbol (str, upper), ex_date (date|None),
+      announcement_date (date|None), payout_type (str), per_share (float|None),
+      bonus_pct (float|None).
+    Caller invokes: cache.upsert_dividend(**event) — no extra kwargs.
+
+    Returns [] if table absent or all rows fail the Details regex.
+    """
+    import re
+    from bs4 import BeautifulSoup
+    from datetime import datetime as _dt
+
+    soup = BeautifulSoup(html, "lxml")
+    PAYOUT_TYPE = {"D": "cash", "B": "bonus", "R": "right"}
+    DETAILS_RE = re.compile(r"\s*([\d.]+)%\s*\(([^)]+)\)\s*\(([A-Z])\)\s*")
+    sym_upper = symbol.upper()
+    events = []
+
+    for table in soup.find_all("table"):
+        tbody = table.find("tbody")
+        if not tbody:
+            continue
+        for tr in tbody.find_all("tr"):
+            cells = [td.get_text(strip=True) for td in tr.find_all("td")]
+            if len(cells) < 4:
+                continue
+            date_str, fr_str, details_str, bc_str = cells[:4]
+
+            m = DETAILS_RE.match(details_str)
+            if not m:
+                continue
+            pct = float(m.group(1))
+            type_letter = m.group(3).upper()
+            payout_type = PAYOUT_TYPE.get(type_letter)
+            if payout_type is None:
+                continue
+
+            # Parse col 1: "31/03/2026(IQ)" -> fiscal_period_end + period_code
+            fr_m = re.match(r"\s*(\d{1,2}/\d{1,2}/\d{4})\s*\(([^)]+)\)\s*", fr_str)
+            if not fr_m:
+                continue
+            try:
+                fiscal_period_end = _dt.strptime(fr_m.group(1), "%d/%m/%Y").date()
+            except ValueError:
+                continue
+            period_code = fr_m.group(2).strip()
+
+            # Parse col 0: "April 29, 2026 2:58 PM" -> announcement_date
+            ann_date = None
+            for fmt in ("%B %d, %Y %I:%M %p", "%B %d, %Y"):
+                try:
+                    ann_date = _dt.strptime(date_str, fmt).date()
+                    break
+                except ValueError:
+                    continue
+
+            # Parse col 3: "12/05/2026  - 14/05/2026" -> ex_date (first half)
+            ex_date = None
+            bc_m = re.match(r"\s*(\d{1,2}/\d{1,2}/\d{4})\s*-", bc_str)
+            if bc_m:
+                try:
+                    ex_date = _dt.strptime(bc_m.group(1), "%d/%m/%Y").date()
+                except ValueError:
+                    pass
+
+            per_share = pct * 10.0 / 100.0 if payout_type == "cash" else None
+            bonus_pct_val = pct if payout_type == "bonus" else None
+            announcement_id = f"{sym_upper}-{fiscal_period_end.year}-{period_code}"
+
+            events.append({
+                "announcement_id": announcement_id,
+                "symbol": sym_upper,
+                "ex_date": ex_date,
+                "announcement_date": ann_date,
+                "payout_type": payout_type,
+                "per_share": per_share,
+                "bonus_pct": bonus_pct_val,
+            })
+    return events

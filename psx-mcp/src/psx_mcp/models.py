@@ -316,3 +316,23 @@ class QuadrantScoreResponse(Disclaimer):
     trend: int
     total: int
     raw: dict
+
+
+class DividendEvent(BaseModel):
+    announcement_id: str
+    symbol: str
+    ex_date: Optional[date] = None
+    announcement_date: Optional[date] = None
+    payout_type: Optional[str] = None
+    per_share: Optional[float] = None
+    bonus_pct: Optional[float] = None
+
+    # Cache stores empty-string dates as "" sometimes; coerce -> None.
+    @field_validator("ex_date", "announcement_date", mode="before")
+    @classmethod
+    def _coerce_blank_to_none(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v

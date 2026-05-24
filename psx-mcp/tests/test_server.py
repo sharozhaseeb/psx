@@ -569,3 +569,20 @@ def test_compute_4quadrant_score_returns_total_0_to_4(tmp_path):
     out = srv._compute_4quadrant_score_impl(cache, "SYS")
     assert 0 <= out.total <= 4
     assert out.value + out.quality + out.momentum + out.trend == out.total
+
+
+def test_get_dividend_history_returns_cached(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_dividend(symbol="FFC", ex_date=date(2025, 9, 1),
+                          announcement_date=date(2025, 8, 15),
+                          payout_type="cash", per_share=8.0, bonus_pct=None,
+                          announcement_id="FFC-2025-09")
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    events = srv._get_dividend_history_impl(cache, "FFC")
+    assert len(events) == 1
+    assert events[0].per_share == 8.0
