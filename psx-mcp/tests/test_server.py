@@ -43,6 +43,46 @@ def test_get_quote_handles_missing(deps):
     assert result.stale is True
 
 
+def test_get_quote_populates_52w_high_low(deps):
+    """The `deps` fixture seeds 30 daily bars for LUCK with strictly increasing
+    open/high/low/close (see fixture). The quote impl should surface the cached
+    high/low over the trailing 252 bars on the returned Quote."""
+    q = deps._get_quote_impl(deps._cache, "LUCK")
+    assert q.week52_high > 0
+    assert q.week52_low > 0
+    assert q.week52_high >= q.week52_low
+    # Fixture seeds high=710+i, low=695+i for i in [0..29], so:
+    assert q.week52_high == 739.0  # 710 + 29
+    assert q.week52_low == 695.0   # 695 + 0
+
+
+def test_get_quote_populates_52w_even_without_quote_row(tmp_path):
+    """If no quote is cached but history is, 52w fields should still be filled."""
+    import server as srv
+    from psx_mcp.models import Bar
+    cache = Cache(str(tmp_path / "t.db"))
+    today = date.today()
+    bars = [Bar(symbol="HIST", date=today - timedelta(days=29 - i),
+                open=100.0, high=120.0 + i, low=80.0 - i, close=100.0, volume=1)
+            for i in range(30)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    q = srv._get_quote_impl(cache, "HIST")
+    assert q.stale is True  # no quote row
+    assert q.week52_high == 149.0  # 120 + 29
+    assert q.week52_low == 51.0    # 80 - 29
+
+
+def test_get_quote_missing_with_no_history_returns_zero_52w(tmp_path):
+    """Defense: no quote AND no history → 52w fields are 0.0, no crash."""
+    import server as srv
+    cache = Cache(str(tmp_path / "t.db"))
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    q = srv._get_quote_impl(cache, "NONE")
+    assert q.week52_high == 0.0
+    assert q.week52_low == 0.0
+
+
 def test_change_pct_subrupee_safe(tmp_path):
     """Verify change_pct doesn't blow up on sub-rupee penny stocks (issue from review)."""
     import server as srv

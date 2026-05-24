@@ -75,3 +75,55 @@ def test_symbol_master_refresh(cache):
     cache.upsert_symbol("LUCK", "Lucky Cement Limited", "Cement", 323_375_503)
     s = cache.get_symbol("LUCK")
     assert s["name"] == "Lucky Cement Limited"
+
+
+def test_fifty_two_week_returns_max_min_of_last_252_closes(tmp_path):
+    db = tmp_path / "c.db"
+    cache = Cache(str(db))
+    # Seed 300 days of synthetic history for "XYZ"
+    import datetime as dt
+    base = dt.date(2025, 1, 1)
+    rows = []
+    for i in range(300):
+        d = base + dt.timedelta(days=i)
+        close = 100 + (i % 50)
+        rows.append((d.isoformat(), "XYZ", 100.0, close + 5, close - 5, float(close), 1000))
+    # No bulk-insert helper exists for raw history tuples; use raw INSERT via conn.
+    cache.conn.executemany(
+        """INSERT INTO bars_daily(date, symbol, open, high, low, close, volume)
+           VALUES(?,?,?,?,?,?,?)""",
+        rows,
+    )
+    cache.conn.commit()
+
+    hi, lo = cache.fifty_two_week("XYZ")
+    # Last 252 rows -> i in [48..299]. close = 100 + (i % 50).
+    # max close in window is 149, so high = 149 + 5 = 154.
+    # min close in window is 100, so low = 100 - 5 = 95.
+    assert hi == 154.0
+    assert lo == 95.0
+
+
+def test_fifty_two_week_returns_zero_when_no_history(cache):
+    hi, lo = cache.fifty_two_week("NOPE")
+    assert hi == 0.0
+    assert lo == 0.0
+
+
+def test_fifty_two_week_handles_partial_history(cache):
+    import datetime as dt
+    base = dt.date(2025, 1, 1)
+    # Only 10 days of bars — less than 252.
+    rows = []
+    for i in range(10):
+        d = base + dt.timedelta(days=i)
+        rows.append((d.isoformat(), "ABC", 100.0, 110.0 + i, 90.0 - i, 100.0, 100))
+    cache.conn.executemany(
+        """INSERT INTO bars_daily(date, symbol, open, high, low, close, volume)
+           VALUES(?,?,?,?,?,?,?)""",
+        rows,
+    )
+    cache.conn.commit()
+    hi, lo = cache.fifty_two_week("ABC")
+    assert hi == 119.0  # 110 + 9
+    assert lo == 81.0   # 90 - 9

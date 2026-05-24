@@ -152,6 +152,28 @@ class Cache:
             out.append(d)
         return out
 
+    def fifty_two_week(self, symbol: str) -> tuple[float, float]:
+        """Return (highest high, lowest low) over the last 252 trading rows for symbol.
+
+        Falls back to (0.0, 0.0) if no history is cached.
+        """
+        row = self.conn.execute(
+            """
+            SELECT MAX(high) AS hi, MIN(low) AS lo FROM (
+                SELECT high, low FROM bars_daily
+                WHERE symbol = ?
+                ORDER BY date DESC
+                LIMIT 252
+            )
+            """,
+            (symbol.upper(),),
+        ).fetchone()
+        hi, lo = (row["hi"], row["lo"]) if row else (None, None)
+        return (
+            float(hi) if hi is not None else 0.0,
+            float(lo) if lo is not None else 0.0,
+        )
+
     def bars_latest_date(self, symbol: str) -> Optional[date]:
         r = self.conn.execute(
             "SELECT MAX(date) AS d FROM bars_daily WHERE symbol=?",

@@ -61,10 +61,11 @@ def _search_symbol_impl(cache: Cache, query: str, limit: int = 10) -> list[Symbo
 def _get_quote_impl(cache: Cache, symbol: str) -> Quote:
     sym = symbol.upper()
     row = cache.get_latest_quote(sym)
+    hi52, lo52 = cache.fifty_two_week(sym)
     if not row:
         return Quote(
             symbol=sym, price=0, change=0, change_pct=0, volume=0,
-            day_high=0, day_low=0, week52_high=0, week52_low=0,
+            day_high=0, day_low=0, week52_high=hi52, week52_low=lo52,
             timestamp=datetime.now(), stale=True,
             summary=f"No data cached for {sym}. Try refresh_market first.",
         )
@@ -76,7 +77,7 @@ def _get_quote_impl(cache: Cache, symbol: str) -> Quote:
         symbol=sym, price=row["price"], change=row["change"],
         change_pct=change_pct,
         volume=row["volume"], day_high=row["day_high"] or 0,
-        day_low=row["day_low"] or 0, week52_high=0, week52_low=0,
+        day_low=row["day_low"] or 0, week52_high=hi52, week52_low=lo52,
         timestamp=datetime.fromisoformat(row["ts"]), stale=stale,
         summary=f"{sym} at {row['price']} ({row['change']:+.2f})",
     )
