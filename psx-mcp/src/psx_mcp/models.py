@@ -245,3 +245,13 @@ class ComparisonTable(Disclaimer):
 class ScreenResponse(Disclaimer):
     results: list[dict]
     count: int
+
+
+class SectorSummaryResponse(Disclaimer):
+    sector: str
+    n: int
+    median_pe: Optional[float] = None
+    avg_change_pct: Optional[float] = None
+    pct_above_sma200: Optional[float] = None
+    top_5_by_change: list[dict] = []
+    bottom_5_by_change: list[dict] = []

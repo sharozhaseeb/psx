@@ -22,9 +22,9 @@ from psx_mcp.models import (
     Quote, Bar, SymbolMatch, MarketSummary, Mover, CompanyInfo, Fundamentals,
     FinancialStatement, Announcement, NewsItem, WatchEntry, AlertRule,
     AlertCondition, AlertHit, VolumeSpike, ComparisonTable, ComparisonRow,
-    ScreenResponse, DEFAULT_DISCLAIMER,
+    ScreenResponse, SectorSummaryResponse, DEFAULT_DISCLAIMER,
 )
-from psx_mcp.screener import screen, FilterSpec
+from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.logging_config import configure_logging, get_logger
 
 mcp = FastMCP(
@@ -595,6 +595,21 @@ async def screen_symbols(
         min_volume=min_volume, min_turnover_pkr=min_turnover_pkr,
         sort_by=sort_by, desc=desc, limit=limit,
     )
+
+
+def _get_sector_summary_impl(cache, sector: str) -> SectorSummaryResponse:
+    data = sector_summary(cache, sector)
+    return SectorSummaryResponse(**data)
+
+
+@mcp.tool()
+async def get_sector_summary(sector: str) -> SectorSummaryResponse:
+    """Sector-level breadth, median PE, top/bottom 5 by change_pct.
+
+    Useful for: market-rotation check, finding under-performing sectors,
+    quick triage before drilling into individual names.
+    """
+    return _get_sector_summary_impl(_cache, sector)
 
 
 if __name__ == "__main__":

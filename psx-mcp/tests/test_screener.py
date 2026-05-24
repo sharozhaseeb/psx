@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime, date, timedelta
 from psx_mcp.cache import Cache
 from psx_mcp.models import Bar
-from psx_mcp.screener import screen, FilterSpec
+from psx_mcp.screener import screen, FilterSpec, sector_summary
 
 
 @pytest.fixture
@@ -83,3 +83,14 @@ def test_screen_above_sma200(seeded_cache):
     # (centered around ~1.0 * price), so all seeded symbols should pass.
     for r in out:
         assert r["sma200"] is not None and r["price"] > r["sma200"]
+
+
+def test_sector_summary_returns_breadth_and_leaders(seeded_cache):
+    """Uses the existing seeded_cache fixture from test_screener.py."""
+    out = sector_summary(seeded_cache, "TECHNOLOGY & COMMUNICATION")
+    assert "n" in out and out["n"] >= 1
+    assert "median_pe" in out
+    assert "avg_change_pct" in out
+    assert "pct_above_sma200" in out  # 0..100
+    assert "top_5_by_change" in out and len(out["top_5_by_change"]) <= 5
+    assert "bottom_5_by_change" in out and len(out["bottom_5_by_change"]) <= 5

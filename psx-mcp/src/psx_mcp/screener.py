@@ -141,3 +141,32 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
         reverse=spec.desc,
     )
     return results[: spec.limit]
+
+
+def sector_summary(cache, sector: str) -> dict:
+    """Return aggregate stats for a sector: breadth, median PE, leaders."""
+    rows = screen(cache, FilterSpec(sector=sector, limit=500))
+    if not rows:
+        return {
+            "sector": sector, "n": 0,
+            "median_pe": None, "avg_change_pct": None,
+            "pct_above_sma200": None,
+            "top_5_by_change": [], "bottom_5_by_change": [],
+        }
+    pes = sorted([r["pe"] for r in rows if r["pe"] is not None])
+    chgs = [r["change_pct"] for r in rows if r["change_pct"] is not None]
+    above = sum(1 for r in rows
+                if r.get("sma200") is not None and r["price"] > r["sma200"])
+    by_chg = sorted([r for r in rows if r["change_pct"] is not None],
+                    key=lambda r: r["change_pct"])
+    return {
+        "sector": sector,
+        "n": len(rows),
+        "median_pe": (pes[len(pes) // 2] if pes else None),
+        "avg_change_pct": (sum(chgs) / len(chgs) if chgs else None),
+        "pct_above_sma200": round(100 * above / len(rows), 1),
+        "top_5_by_change": [{"symbol": r["symbol"], "change_pct": r["change_pct"]}
+                            for r in by_chg[-5:][::-1]],
+        "bottom_5_by_change": [{"symbol": r["symbol"], "change_pct": r["change_pct"]}
+                               for r in by_chg[:5]],
+    }

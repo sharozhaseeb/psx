@@ -410,3 +410,39 @@ def test_screen_symbols_tool_returns_results(tmp_path):
     assert out.count == len(out.results)
     for r in out.results:
         assert r["sector"] == "TECHNOLOGY & COMMUNICATION"
+
+
+def test_get_sector_summary_returns_response(tmp_path):
+    """Server-level wrapper for sector_summary."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime, date, timedelta
+
+    cache = Cache(str(tmp_path / "c.db"))
+    universe = [
+        ("SYS", "Systems Limited", "TECHNOLOGY & COMMUNICATION", 600.0, 5.0, 100_000, 27.5, 5.46),
+        ("NETSOL", "NetSol Technologies", "TECHNOLOGY & COMMUNICATION", 120.0, -2.0, 50_000, 12.0, 10.0),
+    ]
+    ts = datetime(2026, 5, 23, 10, 0)
+    today = date(2026, 5, 23)
+    for sym, name, sector, price, change, volume, pe, eps in universe:
+        cache.upsert_symbol(sym, name, sector, None)
+        cache.upsert_quote(symbol=sym, ts=ts, price=price, change=change,
+                           volume=volume, day_high=price+1, day_low=price-1,
+                           fetched_at=ts)
+        cache.upsert_fundamentals(symbol=sym, eps=eps, pe=pe, pb=None,
+                                  div_yield=None, payout=None, roe=None)
+        bars = []
+        for i in range(250):
+            d = today - timedelta(days=250 - i)
+            close = price * (0.8 + i / 250 * 0.4)
+            bars.append(Bar(symbol=sym, date=d, open=close, high=close*1.01,
+                            low=close*0.99, close=close, volume=volume))
+        cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    out = srv._get_sector_summary_impl(cache, "TECHNOLOGY & COMMUNICATION")
+    assert out.sector == "TECHNOLOGY & COMMUNICATION"
+    assert out.n == 2
+    assert out.disclaimer  # non-empty
