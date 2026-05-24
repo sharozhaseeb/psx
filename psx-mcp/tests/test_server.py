@@ -763,3 +763,51 @@ def test_rank_universe_tool_empty_cache_has_note(tmp_path):
     assert out.rows == []
     assert out.note is not None
     assert "cache is empty" in out.note
+
+
+def test_compute_position_size_atr_based(tmp_path):
+    """100k portfolio, 2% risk, 2x ATR stop, ATR computed from seeded bars."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    bars = []
+    for i in range(30):
+        d = today - timedelta(days=29 - i)
+        close = 100.0 + i
+        bars.append(Bar(symbol="XYZ", date=d, open=close,
+                         high=close + 5, low=close - 5, close=close, volume=1000))
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_position_size_impl(cache, "XYZ",
+                                           portfolio_value=100_000.0,
+                                           risk_pct=2.0, stop_atr_mult=2.0)
+    assert out.atr is not None
+    assert 8 < out.atr < 12  # ATR ~10 for ±5 high-low spread
+    assert out.qty is not None
+    assert out.qty > 0
+    expected_qty = int(2000.0 / (2 * out.atr))
+    assert abs(out.qty - expected_qty) <= 1
+
+
+def test_compute_position_size_insufficient_bars(tmp_path):
+    """< 15 bars → ATR undefined → qty None + note."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_bars([Bar(symbol="XYZ", date=date(2026, 5, 23),
+                            open=100.0, high=110.0, low=90.0, close=100.0, volume=1)])
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_position_size_impl(cache, "XYZ",
+                                           portfolio_value=100_000.0,
+                                           risk_pct=2.0, stop_atr_mult=2.0)
+    assert out.qty is None
+    assert out.note is not None

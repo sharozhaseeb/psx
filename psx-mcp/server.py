@@ -28,7 +28,7 @@ from psx_mcp.models import (
     DrawdownResponse, RiskMetricsResponse,
     RelativeStrengthResponse, CorrelationMatrixResponse,
     SectorRankResponse, UniverseRankResponse,
-    FullAnalysisResponse,
+    FullAnalysisResponse, PositionSizeResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.ranking import (
@@ -893,6 +893,59 @@ async def compute_correlation(symbols: list[str]) -> CorrelationMatrixResponse:
     Useful for diversification: highly-correlated names (>0.8) provide little
     diversification benefit; near-zero correlations diversify well."""
     return _compute_correlation_impl(_cache, symbols)
+
+
+def _compute_position_size_impl(cache: Cache, symbol: str,
+                                 portfolio_value: float,
+                                 risk_pct: float = 1.0,
+                                 stop_atr_mult: float = 2.0) -> PositionSizeResponse:
+    """ATR-based fixed-fractional sizing:
+       risk_per_share = stop_atr_mult x ATR(14)
+       qty = floor((portfolio_value x risk_pct/100) / risk_per_share)"""
+    df = bars_df(cache, symbol, lookback_days=60)
+    risk_budget = portfolio_value * (risk_pct / 100.0)
+    if df.empty or len(df) < 15:
+        return PositionSizeResponse(
+            symbol=symbol.upper(), portfolio_value=portfolio_value,
+            risk_pct=risk_pct, stop_atr_mult=stop_atr_mult,
+            risk_budget=risk_budget,
+            note=(f"Need at least 15 bars to compute ATR(14); have {len(df)}. "
+                  f"Call refresh_history({symbol!r})."),
+        )
+    atr_val = float(atr(df["high"], df["low"], df["close"], 14).iloc[-1])
+    price = float(df["close"].iloc[-1])
+    risk_per_share = stop_atr_mult * atr_val
+    if risk_per_share <= 0:
+        return PositionSizeResponse(
+            symbol=symbol.upper(), portfolio_value=portfolio_value,
+            risk_pct=risk_pct, stop_atr_mult=stop_atr_mult,
+            price=price, atr=atr_val,
+            risk_budget=risk_budget, risk_per_share=risk_per_share,
+            note="ATR collapsed to <= 0; cannot size.",
+        )
+    qty = int(risk_budget // risk_per_share)
+    return PositionSizeResponse(
+        symbol=symbol.upper(), portfolio_value=portfolio_value,
+        risk_pct=risk_pct, stop_atr_mult=stop_atr_mult,
+        price=price, atr=atr_val,
+        risk_budget=risk_budget, risk_per_share=risk_per_share,
+        qty=qty, notional=qty * price,
+        note=None,
+    )
+
+
+@mcp.tool()
+async def compute_position_size(symbol: str, portfolio_value: float,
+                                 risk_pct: float = 1.0,
+                                 stop_atr_mult: float = 2.0) -> PositionSizeResponse:
+    """ATR-based fixed-fractional position sizing.
+
+    risk_pct: portfolio % to risk per trade (industry rule: 1-2%).
+    stop_atr_mult: stop distance in ATR multiples (industry default: 2).
+
+    Returns: ATR, suggested qty (floor), notional cost. None on insufficient bars."""
+    return _compute_position_size_impl(_cache, symbol, portfolio_value,
+                                        risk_pct, stop_atr_mult)
 
 
 def _build_snapshot(cache: Cache, symbol: str) -> dict:

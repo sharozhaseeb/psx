@@ -369,6 +369,20 @@ class CorrelationMatrixResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class PositionSizeResponse(Disclaimer):
+    symbol: str
+    portfolio_value: float
+    risk_pct: float
+    stop_atr_mult: float
+    price: Optional[float] = None
+    atr: Optional[float] = None
+    risk_budget: float
+    risk_per_share: Optional[float] = None
+    qty: Optional[int] = None
+    notional: Optional[float] = None
+    note: Optional[str] = None
+
+
 class FullAnalysisResponse(Disclaimer):
     symbol: str
     quote: Optional[dict] = None
