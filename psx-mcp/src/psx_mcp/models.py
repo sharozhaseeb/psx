@@ -300,3 +300,19 @@ class BetaResponse(Disclaimer):
     r_squared: Optional[float]
     n: int
     note: Optional[str] = None
+
+
+class QualityScoreResponse(Disclaimer):
+    symbol: str
+    score: float
+    snapshot: dict
+
+
+class QuadrantScoreResponse(Disclaimer):
+    symbol: str
+    value: int
+    quality: int
+    momentum: int
+    trend: int
+    total: int
+    raw: dict

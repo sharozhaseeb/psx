@@ -526,3 +526,46 @@ def test_compute_beta_insufficient_overlap_returns_none_with_note(tmp_path):
     assert out.beta is None
     assert out.n == 0
     assert out.note and "overlap" in out.note.lower()
+
+
+def test_compute_4quadrant_score_returns_total_0_to_4(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime, date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    ts = datetime(2026, 5, 23, 10, 0)
+    cache.upsert_symbol("SYS", "Systems", "TECHNOLOGY & COMMUNICATION", None)
+    cache.upsert_quote(symbol="SYS", ts=ts, price=600.0, change=5.0, volume=100_000,
+                       day_high=605, day_low=595, fetched_at=ts)
+    cache.upsert_fundamentals(symbol="SYS", eps=10.0, pe=8.0, pb=None,
+                              div_yield=None, payout=None, roe=20.0)
+    cache.upsert_fundamentals_history(symbol="SYS", fiscal_year=2023, eps=8.0,
+                                       pe=None, pb=None, div_yield=None, payout=None, roe=None,
+                                       gross_margin=None, net_income=None, cfo=None, revenue=None,
+                                       total_assets=None, long_term_debt=None, current_liab=None,
+                                       current_assets=None, shares_outstanding=None,
+                                       source_url=None, refreshed_at=ts)
+    cache.upsert_fundamentals_history(symbol="SYS", fiscal_year=2024, eps=9.0,
+                                       pe=None, pb=None, div_yield=None, payout=None, roe=None,
+                                       gross_margin=None, net_income=None, cfo=None, revenue=None,
+                                       total_assets=None, long_term_debt=None, current_liab=None,
+                                       current_assets=None, shares_outstanding=None,
+                                       source_url=None, refreshed_at=ts)
+    cache.upsert_fundamentals_history(symbol="SYS", fiscal_year=2025, eps=10.0,
+                                       pe=None, pb=None, div_yield=None, payout=None, roe=None,
+                                       gross_margin=None, net_income=None, cfo=None, revenue=None,
+                                       total_assets=None, long_term_debt=None, current_liab=None,
+                                       current_assets=None, shares_outstanding=None,
+                                       source_url=None, refreshed_at=ts)
+    today = date(2026, 5, 23)
+    bars = [Bar(symbol="SYS", date=today - timedelta(days=259 - i),
+                open=100.0 + i, high=100.0 + i, low=100.0 + i,
+                close=100.0 + i, volume=1000) for i in range(260)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_4quadrant_score_impl(cache, "SYS")
+    assert 0 <= out.total <= 4
+    assert out.value + out.quality + out.momentum + out.trend == out.total

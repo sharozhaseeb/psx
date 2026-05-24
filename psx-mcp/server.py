@@ -23,10 +23,15 @@ from psx_mcp.models import (
     FundamentalsHistoryPoint, IndexHistoryPoint, FinancialStatement,
     Announcement, NewsItem, WatchEntry, AlertRule, AlertCondition, AlertHit,
     VolumeSpike, ComparisonTable, ComparisonRow, ScreenResponse,
-    SectorSummaryResponse, BetaResponse, DEFAULT_DISCLAIMER,
+    SectorSummaryResponse, BetaResponse, QualityScoreResponse,
+    QuadrantScoreResponse, DEFAULT_DISCLAIMER,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.beta import beta
+from psx_mcp.quality import (
+    compute_quality_score as _compute_quality_score_pure,
+    compute_4quadrant_score as _compute_4quadrant_score_pure,
+)
 from psx_mcp.logging_config import configure_logging, get_logger
 
 mcp = FastMCP(
@@ -706,6 +711,67 @@ async def compute_beta(symbol: str, index_code: str = "KSE100",
     refresh_market call). Call refresh_history(symbol) and refresh_market once
     before this for full coverage."""
     return _compute_beta_impl(_cache, symbol, index_code, window)
+
+
+def _build_snapshot(cache: Cache, symbol: str) -> dict:
+    """Assemble the dict snapshot expected by quality.py primitives."""
+    sym = symbol.upper()
+    quote = cache.get_latest_quote(sym) or {}
+    fund = cache.get_fundamentals(sym) or {}
+    hist = cache.get_fundamentals_history(sym) or []
+    # newest-first → reverse to oldest-first for compute_quality_score
+    eps_history = list(reversed([h["eps"] for h in hist if h.get("eps") is not None]))
+    sym_row = cache.get_symbol(sym) or {}
+    sector = sym_row.get("sector")
+    sector_med = None
+    if sector:
+        ss = sector_summary(cache, sector)
+        sector_med = ss.get("median_pe")
+    closes = pd.Series(cache.closes_for(sym))
+    return {
+        "pe": fund.get("pe"),
+        "eps": fund.get("eps"),
+        "price": quote.get("price"),
+        "roe": fund.get("roe"),
+        "eps_history": eps_history,
+        "closes": closes,
+        "sector_median_pe": sector_med,
+    }
+
+
+def _snap_for_response(snap: dict) -> dict:
+    """Strip non-JSON-serializable parts of the snapshot for response model."""
+    return {k: v for k, v in snap.items() if k != "closes"}
+
+
+def _compute_quality_score_impl(cache: Cache, symbol: str) -> QualityScoreResponse:
+    snap = _build_snapshot(cache, symbol)
+    score = _compute_quality_score_pure(snap)
+    return QualityScoreResponse(symbol=symbol.upper(), score=score,
+                                 snapshot=_snap_for_response(snap))
+
+
+def _compute_4quadrant_score_impl(cache: Cache, symbol: str) -> QuadrantScoreResponse:
+    snap = _build_snapshot(cache, symbol)
+    sc = _compute_4quadrant_score_pure(snap)
+    return QuadrantScoreResponse(
+        symbol=symbol.upper(),
+        value=sc["value"], quality=sc["quality"],
+        momentum=sc["momentum"], trend=sc["trend"], total=sc["total"],
+        raw=sc["raw"],
+    )
+
+
+@mcp.tool()
+async def compute_quality_score(symbol: str) -> QualityScoreResponse:
+    """Piotroski-flavored quality score (0..1) based on ROE + EPS trend."""
+    return _compute_quality_score_impl(_cache, symbol)
+
+
+@mcp.tool()
+async def compute_4quadrant_score(symbol: str) -> QuadrantScoreResponse:
+    """Composite Value/Quality/Momentum/Trend score (0..4). 3+ = high-conviction."""
+    return _compute_4quadrant_score_impl(_cache, symbol)
 
 
 if __name__ == "__main__":
