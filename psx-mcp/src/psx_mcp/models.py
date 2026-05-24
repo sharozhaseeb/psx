@@ -279,6 +279,7 @@ class ComparisonTable(Disclaimer):
 class ScreenResponse(Disclaimer):
     results: list[dict]
     count: int
+    warnings: list[str] = []
 
 
 class SectorSummaryResponse(Disclaimer):
@@ -331,6 +332,7 @@ class QuadrantScoreResponse(Disclaimer):
     trend: int
     total: int
     raw: dict
+    warnings: list[str] = []
 
 
 class DrawdownResponse(Disclaimer):

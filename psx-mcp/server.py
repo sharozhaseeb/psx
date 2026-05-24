@@ -650,11 +650,17 @@ async def compare_symbols(symbols: list[str], metrics: list[str]) -> ComparisonT
 
 
 def _screen_symbols_impl(cache, **kwargs) -> ScreenResponse:
-    # Filter only non-None kwargs to use FilterSpec defaults
+    from psx_mcp.screener import screen_with_meta, FilterSpec
     spec_kwargs = {k: v for k, v in kwargs.items() if v is not None}
     spec = FilterSpec(**spec_kwargs)
-    rows = screen(cache, spec)
-    return ScreenResponse(results=rows, count=len(rows))
+    rows, meta = screen_with_meta(cache, spec)
+    warnings: list[str] = []
+    if meta["skipped_no_bars"]:
+        warnings.append(
+            f"{meta['skipped_no_bars']} symbol(s) skipped due to insufficient bars "
+            f"(needs >= 50 daily bars). Call refresh_history(symbol) for each."
+        )
+    return ScreenResponse(results=rows, count=len(rows), warnings=warnings)
 
 
 @mcp.tool()
@@ -1029,11 +1035,25 @@ def _compute_quality_score_impl(cache: Cache, symbol: str) -> QualityScoreRespon
 def _compute_4quadrant_score_impl(cache: Cache, symbol: str) -> QuadrantScoreResponse:
     snap = _build_snapshot(cache, symbol)
     sc = _compute_4quadrant_score_pure(snap)
+    warnings: list[str] = []
+    if snap.get("price") is None or snap.get("pe") is None:
+        warnings.append("No quote/fundamentals cached. Value/Quality scores are 0.")
+    if snap.get("sector_median_pe") is None:
+        warnings.append("No sector peers cached → value score = 0 even if PE is low. "
+                        "Call refresh_market first.")
+    if not snap.get("eps_history"):
+        warnings.append("No fundamentals_history (Part-4 dependency) → quality score "
+                        "only reflects current ROE, not EPS trend.")
+    closes = snap.get("closes")
+    if closes is None or len(closes) < 200:
+        warnings.append(f"Need at least 200 daily bars for trend score; have "
+                        f"{len(closes) if closes is not None else 0}. "
+                        f"Call refresh_history({symbol!r}).")
     return QuadrantScoreResponse(
         symbol=symbol.upper(),
         value=sc["value"], quality=sc["quality"],
         momentum=sc["momentum"], trend=sc["trend"], total=sc["total"],
-        raw=sc["raw"],
+        raw=sc["raw"], warnings=warnings,
     )
 
 

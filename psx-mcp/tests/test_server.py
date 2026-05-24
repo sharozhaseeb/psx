@@ -901,3 +901,40 @@ def test_list_watchlist_with_scores_attaches_composite(tmp_path):
     assert e["symbol"] == "SYS"
     assert "composite" in e
     assert e["notes"] == "tech leader"
+
+
+def test_compute_4quadrant_score_warns_on_missing_data(tmp_path):
+    """Empty cache -> score returns zeros AND lists what's missing."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_4quadrant_score_impl(cache, "NOSUCH")
+    assert out.total == 0
+    assert len(out.warnings) > 0
+    joined = " ".join(out.warnings).lower()
+    assert ("sector" in joined or "quote" in joined or "bars" in joined
+            or "fundamentals" in joined)
+
+
+def test_screen_symbols_reports_skipped_count(tmp_path):
+    """Symbols missing bars when a technical filter is set should be reported."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime
+    cache = Cache(str(tmp_path / "c.db"))
+    ts = datetime(2026, 5, 23, 10, 0)
+    cache.upsert_symbol("SYS", "Sys", "TECHNOLOGY & COMMUNICATION", None)
+    cache.upsert_quote(symbol="SYS", ts=ts, price=600.0, change=5.0,
+                       volume=100_000, day_high=605, day_low=595, fetched_at=ts)
+    cache.upsert_fundamentals(symbol="SYS", eps=10.0, pe=8.0, pb=None,
+                              div_yield=None, payout=None, roe=20.0)
+    # No bars -> screener with rsi_min should skip SYS
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._screen_symbols_impl(cache, rsi_min=40, rsi_max=70)
+    assert out.count == 0
+    assert out.warnings  # should mention skipped

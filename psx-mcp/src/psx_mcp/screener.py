@@ -36,11 +36,12 @@ class FilterSpec:
     limit: int = 50
 
 
-def screen(cache, spec: FilterSpec) -> list[dict]:
-    """Filter the cached universe by spec, return sorted matching rows."""
+def _screen(cache, spec: FilterSpec) -> tuple[list[dict], dict]:
+    """Filter the cached universe by spec, return (sorted matching rows, meta)."""
     # 1) SQL-friendly filters
     where: list[str] = []
     params: list = []
+    skipped_no_bars = 0
     if spec.sector:
         where.append("s.sector = ?")
         params.append(spec.sector)
@@ -102,6 +103,7 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
         if len(closes_list) < 50:
             # Not enough bars for reliable indicators — skip if technical filter active
             if technical_active:
+                skipped_no_bars += 1
                 continue
             sma20 = sma50 = sma200 = rsi14 = None
         else:
@@ -139,7 +141,18 @@ def screen(cache, spec: FilterSpec) -> list[dict]:
         key=lambda r: (r.get(sort_key) is None, r.get(sort_key)),
         reverse=spec.desc,
     )
-    return results[: spec.limit]
+    return results[: spec.limit], {"skipped_no_bars": skipped_no_bars, "candidates": len(rows)}
+
+
+def screen(cache, spec: FilterSpec) -> list[dict]:
+    """Backwards-compatible: returns results only, drops meta."""
+    results, _meta = _screen(cache, spec)
+    return results
+
+
+def screen_with_meta(cache, spec: FilterSpec) -> tuple[list[dict], dict]:
+    """For callers that need the skipped-bars count."""
+    return _screen(cache, spec)
 
 
 def sector_summary(cache, sector: str) -> dict:
