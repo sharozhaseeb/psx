@@ -1,0 +1,20 @@
+==============================================================================
+FILE: tests\fixtures\profile_LUCK.html
+  raw_size=69871  visible_chars=28045  tables=7
+  CATEGORY: balance_sheet
+    (no hits)
+  CATEGORY: dividend
+    - 'payout': 6 hit(s)
+        [1] ...Notices NCCPL Notices AGM/EOGM Calendar Payouts GIS Auction Results Companies Listing Status Circuit Breakers Reports Download...
+        [2] ...Notices NCCPL Notices AGM/EOGM Calendar Payouts GIS Auction Results Companies Listing Status Circuit Breakers Reports Download...
+        [3] ... EQUITY ANNOUNCEMENTS FINANCIALS RATIOS PAYOUTS REPORTS QUOTE PROFILE EQUITY ANNOUNCEMENTS FINANCIALS RATIOS PAYOUTS REPORTS L...
+==============================================================================
+FILE: tests\fixtures\financial_LUCK.html
+  raw_size=69871  visible_chars=28045  tables=7
+  CATEGORY: balance_sheet
+    (no hits)
+  CATEGORY: dividend
+    - 'payout': 6 hit(s)
+        [1] ...Notices NCCPL Notices AGM/EOGM Calendar Payouts GIS Auction Results Companies Listing Status Circuit Breakers Reports Download...
+        [2] ...Notices NCCPL Notices AGM/EOGM Calendar Payouts GIS Auction Results Companies Listing Status Circuit Breakers Reports Download...
+        [3] ... EQUITY ANNOUNCEMENTS FINANCIALS RATIOS PAYOUTS REPORTS QUOTE PROFILE EQUITY ANNOUNCEMENTS FINANCIALS RATIOS PAYOUTS REPORTS L...
