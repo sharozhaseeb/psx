@@ -1059,7 +1059,14 @@ def _compute_4quadrant_score_impl(cache: Cache, symbol: str) -> QuadrantScoreRes
 
 @mcp.tool()
 async def compute_quality_score(symbol: str) -> QualityScoreResponse:
-    """Piotroski-flavored quality score (0..1) based on ROE + EPS trend."""
+    """Simple 2-signal quality score (0..1). Signals:
+      +0.5 if ROE >= 15%
+      +0.5 if EPS is non-decreasing across the last 3 fiscal years
+
+    This is NOT a full Piotroski F-Score (which requires 9 signals including
+    balance-sheet items not yet populated; see Part-4 for headless-browser
+    sub-tab fetcher that will unlock ROIC, debt/equity, current ratio, etc.).
+    """
     return _compute_quality_score_impl(_cache, symbol)
 
 
