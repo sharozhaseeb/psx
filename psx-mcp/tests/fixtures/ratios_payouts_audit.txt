@@ -1,0 +1,38 @@
+
+=== RATIOS: ratios_LUCK.html ===
+  [roe               ] hits=  0  sample=''
+  [pb                ] hits=  0  sample=''
+  [div_yield         ] hits=  0  sample=''
+  [payout            ] hits=  0  sample=''
+  [current_ratio     ] hits=  0  sample=''
+  [debt_equity       ] hits=  0  sample=''
+  [long_term_debt    ] hits=  0  sample=''
+  [total_assets      ] hits=  0  sample=''
+  [current_liab      ] hits=  0  sample=''
+  [gross_margin      ] hits=  1  sample='rms of use . ratios 2025 2024 2023 2022 gross profit margin (%) 34.28 33.65 27.1'
+
+=== PAYOUTS: payouts_FFC.html ===
+  [cash_dividend     ] hits=  0  sample=''
+  [bonus             ] hits=  0  sample=''
+  [right             ] hits=  0  sample=''
+  [date              ] hits=  1  sample='date financial results details book closure april 29, 2026 2:58 pm 31/03/2026(iq'
+  [per_share         ] hits=  0  sample=''
+
+=== PAYOUTS: payouts_LUCK.html ===
+  [cash_dividend     ] hits=  0  sample=''
+  [bonus             ] hits=  0  sample=''
+  [right             ] hits=  0  sample=''
+  [date              ] hits=  1  sample='date financial results details book closure august 11, 2025 11:11 am 30/06/2025('
+  [per_share         ] hits=  0  sample=''
+
+=== FIN_STATEMENTS: financial_statements_LUCK.html ===
+  [eps               ] hits=  4  sample="all numbers in thousands (000's) except eps annual quarterly 2025 2024 2023 2022"
+  [net_income        ] hits=  4  sample='1,744 115,324,942 95,832,147 81,093,525 profit after taxation 33,092,162 28,106,'
+  [cfo               ] hits=  0  sample=''
+  [revenue           ] hits=  3  sample='ps annual quarterly 2025 2024 2023 2022 sales 124,511,744 115,324,942 95,832,147'
+  [gross_profit      ] hits=  1  sample='rms of use . ratios 2025 2024 2023 2022 gross profit margin (%) 34.28 33.65 27.1'
+  [total_assets      ] hits=  0  sample=''
+  [current_assets    ] hits=  0  sample=''
+  [current_liab      ] hits=  0  sample=''
+  [long_term_debt    ] hits=  0  sample=''
+  [shares_out        ] hits=  0  sample=''
