@@ -298,6 +298,14 @@ class SectorRankResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class UniverseRankResponse(Disclaimer):
+    metric: str
+    sector: Optional[str] = None
+    limit: int
+    rows: list[dict]
+    note: Optional[str] = None
+
+
 class BetaResponse(Disclaimer):
     symbol: str
     index_code: str

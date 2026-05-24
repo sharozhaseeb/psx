@@ -714,3 +714,52 @@ def test_rank_sectors_tool_returns_sorted_rows(tmp_path):
                                   by="avg_change_pct", desc=True)
     assert out.metric == "avg_change_pct"
     assert out.rows[0]["sector"] == "TECH"
+
+
+def test_rank_universe_tool_returns_composite_rows(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime, date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    ts = datetime(2026, 5, 23, 10, 0)
+    today = date(2026, 5, 23)
+    for sym, sector, price, change in [
+        ("AAA", "TECH", 100.0, +5.0), ("BBB", "TECH", 50.0, +2.0),
+        ("CCC", "CEMENT", 200.0, -3.0), ("DDD", "CEMENT", 100.0, -2.0),
+    ]:
+        cache.upsert_symbol(sym, sym, sector, None)
+        cache.upsert_quote(symbol=sym, ts=ts, price=price, change=change,
+                           volume=10_000, day_high=price+1, day_low=price-1,
+                           fetched_at=ts)
+        cache.upsert_fundamentals(symbol=sym, eps=5.0, pe=10.0, pb=None,
+                                  div_yield=None, payout=None, roe=None)
+        bars = [Bar(symbol=sym, date=today - timedelta(days=259 - i),
+                    open=price * (0.8 + i / 260 * 0.4),
+                    high=price * (0.81 + i / 260 * 0.4),
+                    low=price * (0.79 + i / 260 * 0.4),
+                    close=price * (0.8 + i / 260 * 0.4),
+                    volume=10_000) for i in range(260)]
+        cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._rank_universe_impl(cache, by="composite", sector=None, limit=10)
+    assert out.metric == "composite"
+    assert out.limit == 10
+    assert len(out.rows) >= 1
+    totals = [r["composite"] for r in out.rows]
+    assert totals == sorted(totals, reverse=True)
+
+
+def test_rank_universe_tool_empty_cache_has_note(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._rank_universe_impl(cache, by="composite", sector=None, limit=10)
+    assert out.rows == []
+    assert out.note is not None
+    assert "cache is empty" in out.note

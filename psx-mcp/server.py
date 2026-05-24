@@ -27,10 +27,13 @@ from psx_mcp.models import (
     QuadrantScoreResponse, DividendEvent, DEFAULT_DISCLAIMER,
     DrawdownResponse, RiskMetricsResponse,
     RelativeStrengthResponse, CorrelationMatrixResponse,
-    SectorRankResponse,
+    SectorRankResponse, UniverseRankResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
-from psx_mcp.ranking import rank_sectors as _rank_sectors_pure
+from psx_mcp.ranking import (
+    rank_sectors as _rank_sectors_pure,
+    rank_universe as _rank_universe_pure,
+)
 from psx_mcp.beta import beta
 from psx_mcp.risk import (
     drawdown_current, drawdown_max,
@@ -697,6 +700,31 @@ async def rank_sectors(sectors: list[str] | None = None,
     Valid `by`: 'avg_change_pct' (today's mood), 'median_pe' (relative valuation),
     'pct_above_sma200' (breadth/trend strength), 'n' (member count)."""
     return _rank_sectors_impl(_cache, sectors, by, desc)
+
+
+def _rank_universe_impl(cache: Cache, by: str = "composite",
+                        sector: Optional[str] = None,
+                        limit: int = 20) -> UniverseRankResponse:
+    rows = _rank_universe_pure(cache, by=by, sector=sector, limit=limit)
+    note = None
+    if not rows:
+        note = ("No symbols ranked. Possible causes: cache is empty (call "
+                "refresh_market then refresh_history), or the selected sector "
+                "has no scored members.")
+    return UniverseRankResponse(metric=by, sector=sector, limit=limit,
+                                 rows=rows, note=note)
+
+
+@mcp.tool()
+async def rank_universe(by: str = "composite",
+                        sector: str | None = None,
+                        limit: int = 20) -> UniverseRankResponse:
+    """Rank cached PSX symbols by a metric. Default: 4-quadrant composite score.
+    Valid metrics: 'composite' (Value+Quality+Momentum+Trend, max 4),
+    'change_pct' (today's movers), 'rsi14' (technical overbought/oversold),
+    'pe' (cheapest first). Limits to top-200 candidates by quote freshness;
+    call refresh_history(symbol) for each candidate before this for full coverage."""
+    return _rank_universe_impl(_cache, by, sector, limit)
 
 
 def _compute_beta_impl(cache: Cache, symbol: str,

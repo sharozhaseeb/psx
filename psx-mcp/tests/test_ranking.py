@@ -49,3 +49,27 @@ def test_rank_sectors_by_breadth(seeded):
 def test_rank_sectors_drops_empty_sectors(seeded):
     out = rank_sectors(seeded, sectors=["NOSUCH"], by="avg_change_pct")
     assert out == []
+
+
+def test_rank_universe_by_composite_returns_sorted(seeded):
+    """Use the 4-quadrant composite (max 4) to rank."""
+    from psx_mcp.ranking import rank_universe
+    out = rank_universe(seeded, by="composite", sector=None, limit=10)
+    assert len(out) >= 1
+    totals = [r["composite"] for r in out]
+    assert totals == sorted(totals, reverse=True)
+
+
+def test_rank_universe_filters_to_sector(seeded):
+    from psx_mcp.ranking import rank_universe
+    out = rank_universe(seeded, by="composite", sector="TECH", limit=10)
+    for r in out:
+        assert r["sector"] == "TECH"
+
+
+def test_rank_universe_change_pct_metric(seeded):
+    from psx_mcp.ranking import rank_universe
+    out = rank_universe(seeded, by="change_pct", sector=None, limit=10)
+    # AAA (+5%) and BBB (+2%) lead CCC (-3%) and DDD (-2%)
+    syms = [r["symbol"] for r in out]
+    assert syms.index("AAA") < syms.index("CCC")
