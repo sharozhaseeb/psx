@@ -274,3 +274,32 @@ def test_compare_symbols(deps):
     out = deps._compare_symbols_impl(deps._cache, symbols=["LUCK"], metrics=["price", "rsi14"])
     assert len(out.rows) == 1
     assert out.rows[0].symbol == "LUCK"
+
+
+def test_search_symbol_matches_name(tmp_path):
+    """Verify case-insensitive name matching still works (regression guard)."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_symbol("NETSOL", "NetSol Technologies Limited", "TECHNOLOGY & COMMUNICATION", None)
+    cache.upsert_symbol("SYS", "Systems Limited", "TECHNOLOGY & COMMUNICATION", None)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    out = srv._search_symbol_impl(cache, "netsol")
+    assert any(r.symbol == "NETSOL" for r in out), "case-insensitive name should find NETSOL"
+
+
+def test_search_symbol_matches_sector(tmp_path):
+    """NEW: searching a sector name should return all symbols in that sector."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_symbol("SYS", "Systems Limited", "TECHNOLOGY & COMMUNICATION", None)
+    cache.upsert_symbol("NETSOL", "NetSol Technologies Limited", "TECHNOLOGY & COMMUNICATION", None)
+    cache.upsert_symbol("HUBC", "Hub Power Company", "POWER GENERATION & DISTRIBUTION", None)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    out = srv._search_symbol_impl(cache, "technology")
+    syms = {r.symbol for r in out}
+    assert "SYS" in syms
+    assert "NETSOL" in syms
