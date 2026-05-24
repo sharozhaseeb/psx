@@ -109,6 +109,25 @@ def evaluate_rule(cache: Cache, rule: AlertRule) -> Optional[AlertHit]:
             )
         return None
 
+    if rule.type == "fundamental":
+        fund = cache.get_fundamentals(rule.symbol)
+        if not fund:
+            return None
+        key = cond.indicator
+        if not key or key not in fund:
+            return None
+        val = fund.get(key)
+        if val is None:
+            return None
+        op = _OPS.get(cond.op)
+        if op and op(val, cond.value):
+            return AlertHit(
+                rule_id=rule.id, symbol=rule.symbol, triggered_at=now,
+                message=f"{rule.symbol} {key}={val:.2f} {cond.op} {cond.value}",
+                snapshot={"indicator": key, "value": val, "threshold": cond.value},
+            )
+        return None
+
     return None
 
 

@@ -99,3 +99,53 @@ def test_run_alerts_iterates_active_rules(tmp_path):
                          condition=AlertCondition(op=">", value=800))
     hits = run_alerts(c, store)
     assert len(hits) == 1
+
+
+def test_evaluate_fundamental_rule_pe_below_triggers(tmp_path):
+    """PE < threshold should fire."""
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import AlertRule, AlertCondition
+    from psx_mcp.alerts import evaluate_rule
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_fundamentals(symbol="SYS", eps=10.0, pe=8.0, pb=None,
+                              div_yield=None, payout=None, roe=20.0)
+    rule = AlertRule(
+        id="rid", symbol="SYS", type="fundamental",
+        condition=AlertCondition(indicator="pe", op="<", value=10.0),
+        active=True, created_at=date.today(),
+    )
+    hit = evaluate_rule(cache, rule)
+    assert hit is not None
+    assert "pe" in hit.message.lower()
+
+
+def test_evaluate_fundamental_rule_pe_above_threshold_no_trigger(tmp_path):
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import AlertRule, AlertCondition
+    from psx_mcp.alerts import evaluate_rule
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_fundamentals(symbol="SYS", eps=10.0, pe=12.0, pb=None,
+                              div_yield=None, payout=None, roe=20.0)
+    rule = AlertRule(
+        id="rid", symbol="SYS", type="fundamental",
+        condition=AlertCondition(indicator="pe", op="<", value=10.0),
+        active=True, created_at=date.today(),
+    )
+    assert evaluate_rule(cache, rule) is None
+
+
+def test_evaluate_fundamental_rule_missing_indicator_returns_none(tmp_path):
+    """No fundamentals cached -> silently None, no crash."""
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import AlertRule, AlertCondition
+    from psx_mcp.alerts import evaluate_rule
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    rule = AlertRule(
+        id="rid", symbol="NOSUCH", type="fundamental",
+        condition=AlertCondition(indicator="pe", op="<", value=10.0),
+        active=True, created_at=date.today(),
+    )
+    assert evaluate_rule(cache, rule) is None

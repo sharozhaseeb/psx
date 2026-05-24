@@ -210,7 +210,7 @@ class WatchEntry(BaseModel):
 
 
 Operator = Literal["<", "<=", ">", ">=", "==", "crosses_above", "crosses_below"]
-RuleType = Literal["price", "indicator", "volume", "announcement"]
+RuleType = Literal["price", "indicator", "volume", "announcement", "fundamental"]
 
 
 class AlertCondition(BaseModel):
