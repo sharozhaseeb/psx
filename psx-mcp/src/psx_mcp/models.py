@@ -425,6 +425,20 @@ class WatchlistWithScoresResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class BacktestResponse(Disclaimer):
+    filter_spec: dict
+    hold_days: int
+    since: str
+    n_trades: int
+    mean_return_pct: Optional[float] = None
+    median_return_pct: Optional[float] = None
+    total_return_pct: Optional[float] = None
+    win_rate_pct: Optional[float] = None
+    trades: list[dict] = []
+    caveats: list[str]
+    note: Optional[str] = None
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str

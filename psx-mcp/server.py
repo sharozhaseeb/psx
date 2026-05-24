@@ -33,7 +33,9 @@ from psx_mcp.models import (
     FullAnalysisResponse, PositionSizeResponse,
     CacheStatusResponse, BulkRefreshResponse,
     UpcomingEventsResponse, WatchlistWithScoresResponse,
+    BacktestResponse,
 )
+from psx_mcp.backtest import backtest_simple as _backtest_simple_pure
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.ranking import (
     rank_sectors as _rank_sectors_pure,
@@ -1350,6 +1352,88 @@ async def get_upcoming_events(lookback_days: int = 14) -> UpcomingEventsResponse
     Closure). Heuristic — title-pattern based; actual event dates require
     reading the announcement PDF via its url."""
     return _get_upcoming_events_impl(_cache, lookback_days)
+
+
+# ---- smoke-test backtest ----
+
+BACKTEST_CAVEATS = [
+    "No transaction costs / slippage / spread.",
+    "No dividend reinvestment.",
+    "Raw prices — bonus/split adjustment status indeterminate (see analytics-v1 Q4).",
+    "Per-signal independent positions; no portfolio-level constraint.",
+    "Equal-weight at entry; no rebalance.",
+    "Smoke-test grade — directional sanity check, NOT a production simulation.",
+]
+
+
+def _backtest_simple_impl(cache: Cache,
+                          filter_spec: dict,
+                          hold_days: int = 63,
+                          since: str = "2025-01-01") -> BacktestResponse:
+    """Run a smoke-test backtest using bars_daily.
+
+    Strategy: each trading day in [since, today], use today's filter_spec to identify
+    candidate symbols (forward-looking-data leak — see note); buy each candidate at
+    that day's close, sell hold_days later."""
+    from datetime import date as _d
+
+    since_date = _d.fromisoformat(since)
+    # Gather all bars for all cached symbols once.
+    rows = cache.conn.execute(
+        "SELECT symbol, date, close FROM bars_daily ORDER BY date ASC"
+    ).fetchall()
+    closes_by_sym_date: dict[tuple[str, _d], float] = {}
+    for r in rows:
+        closes_by_sym_date[(r["symbol"], _d.fromisoformat(r["date"]))] = r["close"]
+
+    spec = FilterSpec(**{k: v for k, v in filter_spec.items() if v is not None})
+    candidate_rows = screen(cache, spec)
+    candidate_syms = [r["symbol"] for r in candidate_rows]
+
+    # Build per-symbol date index ONCE — O(total_bars + candidates*candidate_bars)
+    # rather than O(symbols*all_bars*candidates).
+    dates_by_sym: dict[str, list[_d]] = {}
+    for (s, d) in closes_by_sym_date.keys():
+        dates_by_sym.setdefault(s, []).append(d)
+
+    signals_by_date: dict[_d, list[str]] = {}
+    for sym in candidate_syms:
+        for d in dates_by_sym.get(sym, []):
+            if d < since_date:
+                continue
+            signals_by_date.setdefault(d, []).append(sym)
+
+    result = _backtest_simple_pure(
+        closes_by_sym_date=closes_by_sym_date,
+        signals_by_date=signals_by_date,
+        hold_days=hold_days,
+    )
+    return BacktestResponse(
+        filter_spec=filter_spec, hold_days=hold_days, since=since,
+        n_trades=result["n_trades"],
+        mean_return_pct=result["mean_return_pct"],
+        median_return_pct=result["median_return_pct"],
+        total_return_pct=result["total_return_pct"],
+        win_rate_pct=result["win_rate_pct"],
+        trades=[{**t, "entry_date": t["entry_date"].isoformat(),
+                 "exit_date": t["exit_date"].isoformat()} for t in result["trades"]],
+        caveats=BACKTEST_CAVEATS,
+        note=("This is a SMOKE-TEST backtest. Today's fundamentals are used to "
+              "generate past signals, which leaks information forward. Treat "
+              "results as directional sanity only — do not rely on Sharpe/winrate "
+              "for live position sizing."),
+    )
+
+
+@mcp.tool()
+async def backtest_simple(filter_spec: dict,
+                          hold_days: int = 63,
+                          since: str = "2025-01-01") -> BacktestResponse:
+    """Smoke-test backtest of a simple buy-on-signal/sell-after-hold strategy.
+    WARNING: uses today's fundamentals to label past signals — directional only.
+    filter_spec keys correspond to FilterSpec fields (pe_max, min_volume, etc.).
+    Read `caveats` field carefully before relying on results."""
+    return _backtest_simple_impl(_cache, filter_spec, hold_days, since)
 
 
 if __name__ == "__main__":
