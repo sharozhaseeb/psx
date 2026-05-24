@@ -369,6 +369,22 @@ class CorrelationMatrixResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class FullAnalysisResponse(Disclaimer):
+    symbol: str
+    quote: Optional[dict] = None
+    fundamentals: Optional[dict] = None
+    week52: Optional[dict] = None
+    indicators: Optional[dict] = None
+    drawdown: Optional[dict] = None
+    risk: Optional[dict] = None
+    beta: Optional[dict] = None
+    relative_strength: Optional[dict] = None
+    quadrant_score: Optional[dict] = None
+    dividend_history_recent: list[dict] = []
+    announcements_recent: list[dict] = []
+    warnings: list[str] = []
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str

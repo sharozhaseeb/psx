@@ -28,6 +28,7 @@ from psx_mcp.models import (
     DrawdownResponse, RiskMetricsResponse,
     RelativeStrengthResponse, CorrelationMatrixResponse,
     SectorRankResponse, UniverseRankResponse,
+    FullAnalysisResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.ranking import (
@@ -953,6 +954,133 @@ async def compute_quality_score(symbol: str) -> QualityScoreResponse:
 async def compute_4quadrant_score(symbol: str) -> QuadrantScoreResponse:
     """Composite Value/Quality/Momentum/Trend score (0..4). 3+ = high-conviction."""
     return _compute_4quadrant_score_impl(_cache, symbol)
+
+
+# ---- unified dashboard ----
+
+def _get_full_analysis_impl(cache: Cache, symbol: str) -> FullAnalysisResponse:
+    """One-shot dashboard. Composes existing impls. Each section is best-effort
+    — missing data → that section is None and a warning is added."""
+    sym = symbol.upper()
+    warnings: list[str] = []
+
+    # Quote
+    quote = None
+    try:
+        q = _get_quote_impl(cache, sym)
+        quote = q.model_dump(exclude={"disclaimer"})
+        if q.stale:
+            warnings.append("Quote is stale; call refresh_market.")
+    except Exception as e:
+        warnings.append(f"quote: {e!r}")
+
+    # Fundamentals (current)
+    fundamentals = None
+    try:
+        f = cache.get_fundamentals(sym)
+        if f:
+            fundamentals = dict(f)
+        else:
+            warnings.append("No fundamentals cached.")
+    except Exception as e:
+        warnings.append(f"fundamentals: {e!r}")
+
+    # 52w high/low
+    week52 = None
+    try:
+        hi, lo = cache.fifty_two_week(sym)
+        week52 = {"high": hi, "low": lo}
+    except Exception as e:
+        warnings.append(f"52w: {e!r}")
+
+    # Indicators (default bundle)
+    indicators = None
+    try:
+        ind = _compute_indicators_impl(cache, sym, indicators=None)
+        # Strip the embedded disclaimer key
+        indicators = {k: v for k, v in ind.items() if k != "disclaimer"}
+    except Exception as e:
+        warnings.append(f"indicators: {e!r}")
+
+    # Drawdown
+    drawdown = None
+    try:
+        dd = _compute_drawdown_impl(cache, sym)
+        drawdown = dd.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"drawdown: {e!r}")
+
+    # Risk metrics
+    risk = None
+    try:
+        rm = _compute_risk_metrics_impl(cache, sym, rf_annual=0.0)
+        risk = rm.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"risk: {e!r}")
+
+    # Beta
+    beta_dict = None
+    try:
+        b = _compute_beta_impl(cache, sym)
+        beta_dict = b.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"beta: {e!r}")
+
+    # Relative strength
+    rs = None
+    try:
+        rs_r = _compute_relative_strength_impl(cache, sym)
+        rs = rs_r.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"relative_strength: {e!r}")
+
+    # Quadrant score (also lift its per-quadrant warnings into the dashboard top-level)
+    quadrant_score = None
+    try:
+        qs = _compute_4quadrant_score_impl(cache, sym)
+        quadrant_score = qs.model_dump(exclude={"disclaimer"})
+        for w in getattr(qs, "warnings", []) or []:
+            warnings.append(f"quadrant: {w}")
+    except Exception as e:
+        warnings.append(f"quadrant_score: {e!r}")
+
+    # Dividend history (last 5)
+    divs: list[dict] = []
+    try:
+        ds = cache.get_dividend_history(sym)
+        divs = [dict(d) for d in ds[:5]]
+    except Exception as e:
+        warnings.append(f"dividends: {e!r}")
+
+    # Announcements (last 5 for this symbol)
+    anns: list[dict] = []
+    try:
+        rows = cache.conn.execute(
+            "SELECT title, posted_at, url FROM announcements "
+            "WHERE symbol=? ORDER BY posted_at DESC LIMIT 5",
+            (sym,),
+        ).fetchall()
+        anns = [dict(r) for r in rows]
+    except Exception as e:
+        warnings.append(f"announcements: {e!r}")
+
+    return FullAnalysisResponse(
+        symbol=sym, quote=quote, fundamentals=fundamentals,
+        week52=week52, indicators=indicators,
+        drawdown=drawdown, risk=risk, beta=beta_dict,
+        relative_strength=rs, quadrant_score=quadrant_score,
+        dividend_history_recent=divs,
+        announcements_recent=anns,
+        warnings=warnings,
+    )
+
+
+@mcp.tool()
+async def get_full_analysis(symbol: str) -> FullAnalysisResponse:
+    """One-shot research dashboard: quote, fundamentals, 52w range, indicators,
+    drawdown, risk metrics, beta, relative strength, 4-quadrant score, recent
+    dividends, recent announcements. Missing sections → null + warning."""
+    return _get_full_analysis_impl(_cache, symbol)
 
 
 # ---- dividends ----
