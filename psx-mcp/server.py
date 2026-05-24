@@ -14,7 +14,7 @@ from psx_mcp.psx_client import (
     parse_profile, parse_financials, parse_financial_statements,
 )
 from psx_mcp.symbols import search_symbols
-from psx_mcp.indicators import rsi, sma, ema, macd, bollinger, volume_zscore
+from psx_mcp.indicators import rsi, sma, ema, macd, bollinger, volume_zscore, atr
 from psx_mcp.df_utils import bars_df
 from psx_mcp.alerts import run_alerts
 from psx_mcp.news import FEEDS, parse_rss, find_symbol_mentions
@@ -92,8 +92,13 @@ def _get_history_impl(cache: Cache, symbol: str, from_date: str, to_date: str,
                 low=r["low"], close=r["close"], volume=r["volume"]) for r in rows]
 
 
-def _compute_indicators_impl(cache: Cache, symbol: str, indicators: list[str],
+DEFAULT_INDICATOR_BUNDLE = ["sma20", "sma50", "sma200", "rsi14", "atr14"]
+
+
+def _compute_indicators_impl(cache: Cache, symbol: str, indicators: list[str] | None = None,
                               lookback_days: int = 200) -> dict:
+    if not indicators:
+        indicators = DEFAULT_INDICATOR_BUNDLE
     df = bars_df(cache, symbol, lookback_days)
     if df.empty:
         return {"error": f"No bars cached for {symbol}", "disclaimer": DEFAULT_DISCLAIMER}
@@ -114,6 +119,9 @@ def _compute_indicators_impl(cache: Cache, symbol: str, indicators: list[str],
                 out[name] = {"upper": float(b["upper"]), "middle": float(b["middle"]), "lower": float(b["lower"])}
             elif name == "volume_z":
                 out[name] = float(volume_zscore(df["volume"], 20).iloc[-1])
+            elif name.startswith("atr"):
+                window = int(name[3:]) if len(name) > 3 else 14
+                out[name] = float(atr(df["high"], df["low"], df["close"], window).iloc[-1])
             else:
                 out[name] = {"error": f"unknown indicator: {name}"}
         except (ValueError, IndexError, KeyError) as e:
@@ -145,8 +153,13 @@ async def get_history(symbol: str, from_date: str, to_date: str, interval: str =
 
 
 @mcp.tool()
-async def compute_indicators(symbol: str, indicators: list[str], lookback_days: int = 200) -> dict:
-    """Compute one or more indicators from cached daily bars."""
+async def compute_indicators(symbol: str, indicators: list[str] | None = None,
+                              lookback_days: int = 200) -> dict:
+    """Compute one or more indicators from cached daily bars.
+
+    If `indicators` is omitted, returns the default bundle:
+    sma20, sma50, sma200, rsi14, atr14.
+    """
     return _compute_indicators_impl(_cache, symbol, indicators, lookback_days)
 
 

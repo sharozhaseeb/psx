@@ -48,6 +48,21 @@ def volume_zscore(volume: pd.Series, window: int = 20) -> pd.Series:
     return (volume - avg) / std
 
 
+def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    """Wilder's Average True Range.
+
+    True Range = max(high - low, |high - prev_close|, |low - prev_close|).
+    ATR is Wilder-smoothed (equivalent to an EMA with alpha = 1/window).
+    """
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / window, adjust=False).mean()
+
+
 Cross = Literal["crosses_above", "crosses_below"]
 
 

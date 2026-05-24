@@ -117,6 +117,24 @@ def test_compute_indicators_impl(deps):
     assert isinstance(out["rsi14"], float)
 
 
+def test_compute_indicators_default_bundle(tmp_path):
+    """When indicators=None, _compute_indicators_impl returns the default bundle."""
+    import server as srv
+    from psx_mcp.models import Bar
+    cache = Cache(str(tmp_path / "t.db"))
+    today = date.today()
+    # Seed 250 bars so sma200 / atr14 have enough history.
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=249 - i),
+                open=100.0 + i * 0.1, high=105.0 + i * 0.1,
+                low=95.0 + i * 0.1, close=100.0 + i * 0.1, volume=1000)
+            for i in range(250)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    out = srv._compute_indicators_impl(cache, "XYZ", indicators=None)
+    for key in ("sma20", "sma50", "sma200", "rsi14", "atr14"):
+        assert key in out, f"missing default indicator {key}"
+
+
 import asyncio
 import httpx
 import respx
