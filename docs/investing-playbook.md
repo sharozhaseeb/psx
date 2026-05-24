@@ -241,6 +241,8 @@ By this scorecard SYS and NETSOL are stronger picks than AIRLINK — consistent 
 | `dps.psx.com.pk/dividends` | Dividend history per symbol | Low |
 | `dps.psx.com.pk/board-meetings` | Earnings calendar | Low |
 
+**Company sub-tab endpoints (probed 2026-05-24, see `psx-mcp/tests/fixtures/company_subtabs_probe.txt`):** of the four sub-tabs visible on `/company/<SYM>` (Profile / Financials / Ratios / Payouts / Financial Reports), only **`POST https://dps.psx.com.pk/company/payouts`** with form body `symbol=<SYM>` returns a server-rendered HTML fragment (a `<table class="tbl">` with `Date | Financial Results | Details | Book Closure` columns — one row per dividend announcement, percentage-of-face-value format). All other sub-tab paths (`/company/<SYM>/ratios`, `/financials`, `/financial-reports`, plus POST variants `/company/ratios`, `/company/financials`, `/company/balancesheet`, `/company/keystats`, and `/api/...` / `/data/...` styles) return **404**. The `GET /company/<SYM>?tab=...` URLs return 200 but serve the identical static landing-page HTML — the tab content is purely client-rendered. The landing-page HTML itself contains a 4-year Income-Statement table (Sales / Profit after Taxation / EPS) + a small Ratios table (Gross Profit Margin %, Net Profit Margin %, EPS Growth %, PEG), but **no** ROE / P/B / dividend yield / payout ratio / current ratio / balance-sheet items. Implication: dividend history is buildable now; ROE/P/B/payout-ratio extraction and Piotroski F-Score require a headless browser and are deferred to Part 3.
+
 ### Tier 2: Macro (free, official)
 
 | Source | Data | URL |
