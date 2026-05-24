@@ -21,6 +21,20 @@ These are gaps observed while doing real research with the current 24 tools. Eac
 | **Volume averages (20d, 50d)** | Today's volume only means something relative to baseline | `scan_volume_spikes` exists but raw avg isn't exposed |
 | **Beta computation** ✅ *NEW in analytics-v2* | Risk decomposition, low-beta / BAB strategies | `compute_beta(symbol, index_code="KSE100", window=252)` runs OLS over date-aligned EOD returns |
 | **4-quadrant composite scoring** ✅ *NEW in analytics-v2* | Value / Quality / Momentum / Trend synthesis from Part 3 of this playbook | `compute_4quadrant_score(symbol)` returns sub-scores + total in [0, 4]; `compute_quality_score(symbol)` returns the standalone quality component |
+| **Drawdown** ✅ *Resolved in analytics-v3* | Current draw from 52w high + max trailing DD; risk sanity-check on any entry | `compute_drawdown(symbol)` over cached daily closes |
+| **Volatility / Sharpe** ✅ *Resolved in analytics-v3* | Risk-adjusted return — required for any portfolio construction | `compute_risk_metrics(symbol, rf_annual=0)` returns annualized vol, Sharpe, max DD |
+| **Relative strength vs index** ✅ *Resolved in analytics-v3* | Stock vs benchmark — core momentum-rotation signal | `compute_relative_strength(symbol, index_code="KSE100", window=252)` over date-aligned EOD |
+| **Correlation matrix** ✅ *Resolved in analytics-v3* | Diversification check across watchlist / basket | `compute_correlation(symbols)` returns pairwise return correlations |
+| **Sector rotation** ✅ *Resolved in analytics-v3* | Rank sectors by avg return / breadth / median PE | `rank_sectors(sectors?, by="avg_change_pct", desc=True)` — defaults to 13 major PSX sectors |
+| **Cross-sectional ranking** ✅ *Resolved in analytics-v3* | "Top N by composite / change_pct / RSI / PE across the universe" | `rank_universe(by="composite", sector?, limit=20)` |
+| **Position sizing** ✅ *Resolved in analytics-v3* | Translate conviction + risk budget into share count | `compute_position_size(symbol, portfolio_value, risk_pct=1.0, stop_atr_mult=2.0)` — ATR-based fixed-fractional |
+| **Cache status surface** ✅ *Resolved in analytics-v3* | "How fresh is my data?" before running a scan | `get_cache_status()` returns per-table row count + freshness summary |
+| **Bulk refresh** ✅ *Resolved in analytics-v3* | Pre-warm history across a sector before screening | `refresh_universe(symbols?, sector?)` |
+| **Upcoming events** ✅ *Resolved in analytics-v3* (heuristic) | Board meetings, AGM/EGM, ex-dates, book-closure windows | `get_upcoming_events(lookback_days=14)` — title-pattern filter over cached announcements. Actual dates still require PDF body extraction. |
+| **Watchlist with scores** ✅ *Resolved in analytics-v3* | One call instead of N for the daily check-in | `list_watchlist_with_scores()` — entries joined with composite scores + per-entry warnings |
+| **Fundamental alert triggers** ✅ *Resolved in analytics-v3* | "Tell me if SYS PE crosses 25 or NETSOL ROE drops below 12%" | `set_alert_rule` now accepts `type="fundamental"` for PE / ROE / div_yield thresholds |
+| **Backtest smoke test** ✅ *Resolved in analytics-v3* (caveated) | Sanity-check a screener filter vs holding the index | `backtest_simple(filter_spec, hold_days=63, since="2025-01-01")` — single entry, no costs, no rebalancing; caveats in response |
+| **One-shot dashboard** ✅ *Resolved in analytics-v3* | Compose all the above into a single research view | `get_full_analysis(symbol)` — quote + fundamentals + 52w + indicators + drawdown + risk + beta + RS + 4-quadrant + dividends + announcements |
 | **Free float % / shares outstanding history** | Detect dilution, bonus issues | `free_float` partially populated, no history |
 | **Corporate actions calendar** | Bonus shares, splits, rights, dividend ex-dates | No tool; SYS FY24 EPS looks "crashed" without action history |
 | **Insider / director transactions** | Strongest short-term signal in EM markets | No tool |
@@ -356,6 +370,8 @@ Build on the financials already cached. F-score is the showcase win.
 Three RSS feeds (BR, Dawn, Tribune) + a per-symbol headline filter. Avoid sentiment modeling — use the LLM at query time.
 
 **Status (2026-05-24):** `analytics-v2` ships dividend history, index EOD series, beta, and composite scoring. Part 3 will populate ROE / P/B / payout-ratio via a headless-browser Ratios sub-tab fetch and add the full Piotroski F-Score on top of the resulting balance-sheet coverage.
+
+**analytics-v3** completes the analytical-tool surface (risk, ranking, sizing, dashboard, backtest). **Part 4** will populate ROE/PB/payout via a headless-browser sub-tab fetcher, unlock the full 9-signal Piotroski F-Score, and add macro context (USD/PKR, policy rate).
 
 ---
 

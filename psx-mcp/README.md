@@ -55,15 +55,28 @@ Live smoke test (gated, hits real PSX):
 | `get_financials` | annual/quarterly statements (best-effort) |
 | `get_index_history(index_code, since=None)` | EOD index time series (`KSE100` / `KSE30` / `ALLSHR`). Populated by `refresh_market`. |
 | `list_watchlist` / `add_to_watchlist` / `remove_from_watchlist` | watchlist mgmt |
-| `set_alert_rule` / `list_alert_rules` / `remove_alert_rule` | rule mgmt |
+| `set_alert_rule` / `list_alert_rules` / `remove_alert_rule` | rule mgmt — supports `type` in `{"price", "indicator", "volume", "fundamental"}`. New `"fundamental"` type triggers on PE / ROE / dividend-yield thresholds against cached fundamentals. |
 | `check_alerts` | on-demand alert scan |
 | `compute_indicators` | RSI/MACD/SMA/EMA/Bollinger/vol-z/ATR/Donchian/returns_window. Omit `indicators` for default bundle: `sma20`, `sma50`, `sma200`, `rsi14`, `atr14`. |
 | `compute_beta(symbol, index_code="KSE100", window=252)` | OLS beta of symbol vs index over date-aligned EOD returns |
-| `compute_quality_score(symbol)` | composite quality score in [0, 1] from ROE + EPS trend |
-| `compute_4quadrant_score(symbol)` | Value / Quality / Momentum / Trend composite in [0, 4] (sub-scores + total) |
+| `compute_quality_score(symbol)` | composite quality score in [0, 1] — **2-signal (ROE + EPS trend), not the full 9-point Piotroski**. F-score deferred to Part 4 when balance-sheet items land. |
+| `compute_4quadrant_score(symbol)` | Value / Quality / Momentum / Trend composite in [0, 4] (sub-scores + total). Response includes `warnings: list[str]` for silent-failure cases (e.g. missing fundamentals, insufficient history). |
+| `compute_drawdown(symbol)` | current draw from rolling max + max trailing drawdown over cached daily closes |
+| `compute_risk_metrics(symbol, rf_annual=0)` | annualized volatility, Sharpe ratio, and max drawdown from cached daily returns |
+| `compute_relative_strength(symbol, index_code="KSE100", window=252)` | RS of symbol vs index over date-aligned EOD closes (last `window` overlapping days) |
+| `compute_correlation(symbols)` | pairwise return correlation matrix across the supplied symbols (date-aligned closes) |
+| `compute_position_size(symbol, portfolio_value, risk_pct=1.0, stop_atr_mult=2.0)` | ATR-based fixed-fractional position sizing — returns shares, rupee exposure, stop level |
+| `rank_sectors(sectors?, by="avg_change_pct", desc=True)` | sector rotation table — ranks the 13 major PSX sectors (or a supplied subset) by `avg_change_pct` / `breadth_up` / `median_pe` |
+| `rank_universe(by="composite", sector?, limit=20)` | cross-sectional top-N over the cached universe by `composite` / `change_pct` / `rsi14` / `pe` (optionally restricted to a sector) |
+| `get_full_analysis(symbol)` | one-shot research dashboard composing quote, fundamentals, 52w, indicators, drawdown, risk, beta, RS, quadrant score, dividends, announcements; lifts `qs.warnings` into a top-level `warnings: list[str]` |
+| `get_cache_status()` | per-table row count + freshness summary (last refresh timestamps across quotes / history / announcements / news / dividends / indices) |
+| `refresh_universe(symbols?, sector?)` | bulk history refresh across an explicit symbol list or all symbols in a sector |
+| `get_upcoming_events(lookback_days=14)` | title-pattern filter over cached announcements — Board Meeting / AGM / EGM / CBS / Ex-Date / Book Closure (heuristic; actual dates require PDF body extraction) |
+| `list_watchlist_with_scores()` | watchlist entries joined with composite scores; each entry exposes per-symbol `warnings: list[str]` for silent-failure visibility |
+| `backtest_simple(filter_spec, hold_days=63, since="2025-01-01")` | smoke-test backtest — applies a screener filter, holds matched names for `hold_days`, returns avg/median return vs KSE-100 (no transaction costs, no rebalancing, single entry — caveats documented in response) |
 | `scan_volume_spikes` | volume-spike scanner |
 | `compare_symbols` | side-by-side metric table; includes `change_pct` and `volume` from latest quote |
-| `screen_symbols` | multi-criteria screener — filter by sector(s), PE, EPS, price, RSI, SMA stack, volume, turnover, **`roe_min`**, **`pb_max`**, **`div_yield_min`**; sort + limit. E.g. `screen_symbols(sector="TECHNOLOGY & COMMUNICATION", pe_max=15, roe_min=0.15, pb_max=3.0, above_sma200=True, sort_by="change_pct", desc=True, limit=20)` |
+| `screen_symbols` | multi-criteria screener — filter by sector(s), PE, EPS, price, RSI, SMA stack, volume, turnover, **`roe_min`**, **`pb_max`**, **`div_yield_min`**; sort + limit. Response includes `warnings: list[str]` for silent-failure cases (e.g. fundamentals filter requested but underlying column null). E.g. `screen_symbols(sector="TECHNOLOGY & COMMUNICATION", pe_max=15, roe_min=0.15, pb_max=3.0, above_sma200=True, sort_by="change_pct", desc=True, limit=20)` |
 | `get_sector_summary` | sector-level aggregates: member count, breadth (% up / % above SMA200), median PE, top & bottom 5 by `change_pct` |
 
 ## Usage tips
