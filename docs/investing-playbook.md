@@ -12,10 +12,10 @@ These are gaps observed while doing real research with the current 24 tools. Eac
 
 | Missing | Why it matters | Observed pain |
 |---|---|---|
-| **52-week high/low** | Standard reference for "where am I in the range" | `week52_high` / `week52_low` return `0` for every quote |
-| **KSE-100 / KSE-30 / All-Share index values** | Sector and stock returns are meaningless without a benchmark | `get_market_summary` returned nulls even after refresh |
-| **News bodies / announcement text** | Got 40 news IDs cached, but `get_news` returned `[]` — only titles or nothing | Couldn't read why SYS adjourned its board meeting |
-| **Sector aggregates** | "Show me sector P/E, sector avg RSI, leaders/laggards within sector" | Had to manually probe ~10 symbols to identify tech names |
+| **52-week high/low** ✅ *Resolved in analytics-v1* | Standard reference for "where am I in the range" | `week52_high` / `week52_low` now computed from cached daily history |
+| **KSE-100 / KSE-30 / All-Share index values** ✅ *Resolved in analytics-v1* | Sector and stock returns are meaningless without a benchmark | `get_market_summary` now populated from cached `indices` table (refreshed alongside market-watch) |
+| **News bodies / announcement text** ⚠ *Partial (analytics-v1)* | Got 40 news IDs cached, but `get_news` returned `[]` — only titles or nothing | Announcement `url` (PSX detail page) is now propagated; full body extraction still deferred |
+| **Sector aggregates** ✅ *Resolved in analytics-v1* (`get_sector_summary`) | "Show me sector P/E, sector avg RSI, leaders/laggards within sector" | New tool returns member count, breadth, median PE, top/bottom 5 by change_pct |
 | **Dividend history** | Yield, payout, growth — core to any income/quality strategy | `div_yield` / `payout` always `null` |
 | **Quality metrics** | ROE, ROA, ROIC, debt/equity, current ratio — fundamental quality filters | `roe` / `pb` always `null` |
 | **Volume averages (20d, 50d)** | Today's volume only means something relative to baseline | `scan_volume_spikes` exists but raw avg isn't exposed |
@@ -28,11 +28,11 @@ These are gaps observed while doing real research with the current 24 tools. Eac
 
 ### Tool design issues
 
-- **`search_symbol`** seemed to match only exact-symbol substrings (`SYS` worked, `TRG`/`NETSOL` returned `[]` despite being cached). Fix: also index name and sector.
+- **`search_symbol`** ✅ *Resolved in analytics-v1* — now also matches against company name and sector, not just symbol prefix.
 - **`get_quote`** returns `stale=true` for known-active symbols (SYS, AVN) right after `refresh_market` — suggests refresh isn't covering all 486 rows uniformly, or the staleness check is wrong.
-- **`compute_indicators`** requires explicit `indicators` list with no default — first call errored. Default to a sensible bundle (`["sma20","sma50","sma200","rsi14","atr14"]`).
-- **`compare_symbols`** returned `null` for `change_pct` and `volume` even when `get_quote` had them — joining bug.
-- **No screening tool** — can't ask "all symbols in TECHNOLOGY & COMMUNICATION with PE < 15 and RSI between 40 and 60." This is the single biggest workflow gap.
+- **`compute_indicators`** ✅ *Resolved in analytics-v1* — default bundle (`sma20`, `sma50`, `sma200`, `rsi14`, `atr14`) returned when `indicators` is omitted.
+- **`compare_symbols`** ✅ *Resolved in analytics-v1* — `change_pct` and `volume` now populated from latest quote join.
+- **No screening tool** ✅ *Resolved in analytics-v1* (`screen_symbols`) — multi-criteria filter over sector, PE, EPS, price, RSI, SMA stack, volume, turnover with sort + limit.
 
 ---
 
