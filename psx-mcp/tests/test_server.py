@@ -938,3 +938,70 @@ def test_screen_symbols_reports_skipped_count(tmp_path):
     out = srv._screen_symbols_impl(cache, rsi_min=40, rsi_max=70)
     assert out.count == 0
     assert out.warnings  # should mention skipped
+
+
+def test_get_news_returns_cached_rows(tmp_path):
+    """Regression test (Phase 6.4): news cache round-trip should not return []
+    when rows exist. The symbols column is comma-separated TEXT (not JSON);
+    `_get_news_impl(cache, symbol, since_days)` must round-trip it correctly
+    for both unfiltered and symbol-filtered reads, and exclude rows whose
+    symbols don't include the requested ticker."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    now = datetime.now()
+    # Row 1: tagged with KSE100 + LUCK
+    cache.conn.execute(
+        """INSERT INTO news(id, source, posted_at, title, url, symbols)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("n1", "dawn_business", now.isoformat(),
+         "PSX hits new high", "https://dawn.com/a", "KSE100,LUCK"),
+    )
+    # Row 2: no symbols
+    cache.conn.execute(
+        """INSERT INTO news(id, source, posted_at, title, url, symbols)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("n2", "profit_pakistan", (now - timedelta(days=1)).isoformat(),
+         "General market commentary", "https://profit.pk/b", ""),
+    )
+    # Row 3: older than the since_days window
+    cache.conn.execute(
+        """INSERT INTO news(id, source, posted_at, title, url, symbols)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("n3", "dawn_business", (now - timedelta(days=30)).isoformat(),
+         "Stale story", "https://dawn.com/c", "LUCK"),
+    )
+    cache.conn.commit()
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+
+    # symbol=None within window -> both recent rows, newest first
+    out_all = srv._get_news_impl(cache, None, 7)
+    assert len(out_all) == 2
+    assert out_all[0].title == "PSX hits new high"
+    assert out_all[0].symbols == ["KSE100", "LUCK"]
+    assert out_all[1].symbols == []  # empty symbols column round-trips to []
+
+    # symbol filter -> only rows whose symbols include the ticker
+    out_luck = srv._get_news_impl(cache, "LUCK", 7)
+    assert len(out_luck) == 1
+    assert out_luck[0].id == "n1"
+
+    # symbol filter is case-insensitive on the query side
+    out_lower = srv._get_news_impl(cache, "luck", 7)
+    assert len(out_lower) == 1
+    assert out_lower[0].id == "n1"
+
+    # since_days excludes the 30-day-old story even when filtered by symbol
+    out_window = srv._get_news_impl(cache, "LUCK", 7)
+    assert all(it.id != "n3" for it in out_window)
+
+    # widening the window pulls the older LUCK story back in
+    out_wide = srv._get_news_impl(cache, "LUCK", 60)
+    assert {it.id for it in out_wide} == {"n1", "n3"}
+
+    # filter miss -> empty list (not an error)
+    out_miss = srv._get_news_impl(cache, "NOTAREALSYM", 7)
+    assert out_miss == []
