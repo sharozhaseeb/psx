@@ -1,0 +1,143 @@
+"""Multi-criteria filter over the cached PSX universe.
+
+Pulls quotes + fundamentals + computed indicators into a single result set.
+"""
+from __future__ import annotations
+from dataclasses import dataclass, field
+from typing import Optional
+import pandas as pd
+
+from psx_mcp import indicators
+
+
+SORTABLE = {"change_pct", "volume", "pe", "rsi14", "symbol", "price"}
+
+
+@dataclass
+class FilterSpec:
+    sector: Optional[str] = None
+    sectors: list[str] = field(default_factory=list)
+    pe_min: Optional[float] = None
+    pe_max: Optional[float] = None
+    eps_min: Optional[float] = None
+    price_min: Optional[float] = None
+    price_max: Optional[float] = None
+    rsi_min: Optional[float] = None
+    rsi_max: Optional[float] = None
+    above_sma200: Optional[bool] = None
+    sma20_gt_sma50: Optional[bool] = None
+    min_volume: Optional[int] = None
+    min_turnover_pkr: Optional[float] = None
+    sort_by: str = "symbol"
+    desc: bool = False
+    limit: int = 50
+
+
+def screen(cache, spec: FilterSpec) -> list[dict]:
+    """Filter the cached universe by spec, return sorted matching rows."""
+    # 1) SQL-friendly filters
+    where: list[str] = []
+    params: list = []
+    if spec.sector:
+        where.append("s.sector = ?")
+        params.append(spec.sector)
+    elif spec.sectors:
+        where.append("s.sector IN (" + ",".join("?" * len(spec.sectors)) + ")")
+        params.extend(spec.sectors)
+    if spec.pe_min is not None:
+        where.append("f.pe >= ?")
+        params.append(spec.pe_min)
+    if spec.pe_max is not None:
+        where.append("f.pe <= ?")
+        params.append(spec.pe_max)
+    if spec.eps_min is not None:
+        where.append("f.eps >= ?")
+        params.append(spec.eps_min)
+    if spec.price_min is not None:
+        where.append("q.price >= ?")
+        params.append(spec.price_min)
+    if spec.price_max is not None:
+        where.append("q.price <= ?")
+        params.append(spec.price_max)
+    if spec.min_volume is not None:
+        where.append("q.volume >= ?")
+        params.append(spec.min_volume)
+    if spec.min_turnover_pkr is not None:
+        where.append("q.price * q.volume >= ?")
+        params.append(spec.min_turnover_pkr)
+
+    sql = """
+        SELECT s.symbol, s.name, s.sector,
+               q.price, q.change, q.volume,
+               f.pe, f.eps
+        FROM symbols s
+        JOIN quotes q ON q.symbol = s.symbol
+            AND q.ts = (SELECT MAX(ts) FROM quotes q2 WHERE q2.symbol = s.symbol)
+        LEFT JOIN fundamentals f ON f.symbol = s.symbol
+    """
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " LIMIT 500"  # candidate cap
+
+    rows = cache.conn.execute(sql, params).fetchall()
+
+    # 2) Compute change_pct and indicators per candidate
+    results: list[dict] = []
+    for r in rows:
+        sym = r["symbol"]
+        price = r["price"]
+        change = r["change"]
+        prev_close = price - change
+        change_pct = (change / prev_close * 100) if prev_close > 0 else None
+
+        # Fetch close series for indicators
+        close_rows = cache.conn.execute(
+            "SELECT close FROM bars_daily WHERE symbol = ? ORDER BY date ASC",
+            (sym,),
+        ).fetchall()
+        closes_list = [c["close"] for c in close_rows]
+        technical_active = any(
+            x is not None for x in [
+                spec.rsi_min, spec.rsi_max,
+                spec.above_sma200, spec.sma20_gt_sma50,
+            ]
+        )
+        if len(closes_list) < 50:
+            # Not enough bars for reliable indicators — skip if technical filter active
+            if technical_active:
+                continue
+            sma20 = sma50 = sma200 = rsi14 = None
+        else:
+            closes = pd.Series(closes_list)
+            sma20 = float(indicators.sma(closes, 20).iloc[-1]) if len(closes) >= 20 else None
+            sma50 = float(indicators.sma(closes, 50).iloc[-1]) if len(closes) >= 50 else None
+            sma200 = float(indicators.sma(closes, 200).iloc[-1]) if len(closes) >= 200 else None
+            rsi14 = float(indicators.rsi(closes, 14).iloc[-1])
+
+        if spec.rsi_min is not None and (rsi14 is None or rsi14 < spec.rsi_min):
+            continue
+        if spec.rsi_max is not None and (rsi14 is None or rsi14 > spec.rsi_max):
+            continue
+        if spec.above_sma200 is True and (sma200 is None or price <= sma200):
+            continue
+        if spec.above_sma200 is False and (sma200 is not None and price > sma200):
+            continue
+        if spec.sma20_gt_sma50 is True and not (sma20 and sma50 and sma20 > sma50):
+            continue
+        if spec.sma20_gt_sma50 is False and (sma20 and sma50 and sma20 > sma50):
+            continue
+
+        results.append({
+            "symbol": sym, "name": r["name"], "sector": r["sector"],
+            "price": price, "change_pct": change_pct, "volume": r["volume"],
+            "pe": r["pe"], "eps": r["eps"],
+            "sma20": sma20, "sma50": sma50, "sma200": sma200, "rsi14": rsi14,
+        })
+
+    # 3) Sort & limit
+    sort_key = spec.sort_by if spec.sort_by in SORTABLE else "symbol"
+    results.sort(
+        key=lambda r: (r.get(sort_key) is None, r.get(sort_key)),
+        reverse=spec.desc,
+    )
+    return results[: spec.limit]

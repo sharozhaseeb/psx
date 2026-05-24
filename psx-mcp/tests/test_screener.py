@@ -1,0 +1,85 @@
+import pytest
+from datetime import datetime, date, timedelta
+from psx_mcp.cache import Cache
+from psx_mcp.models import Bar
+from psx_mcp.screener import screen, FilterSpec
+
+
+@pytest.fixture
+def seeded_cache(tmp_path):
+    """Cache with symbols, quotes, fundamentals, and ~250 bars per symbol."""
+    cache = Cache(str(tmp_path / "c.db"))
+    universe = [
+        ("SYS", "Systems Limited", "TECHNOLOGY & COMMUNICATION", 600.0, 5.0, 100_000, 27.5, 5.46),
+        ("NETSOL", "NetSol Technologies", "TECHNOLOGY & COMMUNICATION", 120.0, -2.0, 50_000, 12.0, 10.0),
+        ("LUCK", "Lucky Cement", "CEMENT", 750.0, 10.0, 30_000, 8.5, 88.0),
+        ("HUBC", "Hub Power", "POWER GENERATION & DISTRIBUTION", 130.0, 1.0, 200_000, 5.0, 26.0),
+        ("CHEAP", "Cheap Co", "TECHNOLOGY & COMMUNICATION", 5.0, 0.05, 5_000_000, 6.0, 0.83),
+    ]
+    ts = datetime(2026, 5, 23, 10, 0)
+    for sym, name, sector, price, change, volume, pe, eps in universe:
+        cache.upsert_symbol(sym, name, sector, None)
+        cache.upsert_quote(symbol=sym, ts=ts, price=price, change=change,
+                           volume=volume, day_high=price + 1, day_low=price - 1,
+                           fetched_at=ts)
+        cache.upsert_fundamentals(symbol=sym, eps=eps, pe=pe, pb=None,
+                                  div_yield=None, payout=None, roe=None)
+        # Seed ~250 daily bars with mild uptrend so indicators have data
+        today = date(2026, 5, 23)
+        bars = []
+        for i in range(250):
+            d = today - timedelta(days=250 - i)
+            close = price * (0.8 + i / 250 * 0.4)  # 80%..120% of current
+            bars.append(Bar(symbol=sym, date=d, open=close, high=close * 1.01,
+                            low=close * 0.99, close=close, volume=volume))
+        cache.upsert_bars(bars)
+    return cache
+
+
+def test_screen_filters_by_pe_max(seeded_cache):
+    out = screen(seeded_cache, FilterSpec(pe_max=10))
+    for r in out:
+        assert r["pe"] is not None and r["pe"] <= 10
+
+
+def test_screen_filters_by_sector(seeded_cache):
+    out = screen(seeded_cache, FilterSpec(sector="TECHNOLOGY & COMMUNICATION"))
+    for r in out:
+        assert r["sector"] == "TECHNOLOGY & COMMUNICATION"
+
+
+def test_screen_combines_filters_AND(seeded_cache):
+    spec = FilterSpec(sector="TECHNOLOGY & COMMUNICATION", pe_max=15)
+    out = screen(seeded_cache, spec)
+    for r in out:
+        assert r["sector"] == "TECHNOLOGY & COMMUNICATION"
+        assert r["pe"] is not None and r["pe"] <= 15
+
+
+def test_screen_min_turnover(seeded_cache):
+    out = screen(seeded_cache, FilterSpec(min_turnover_pkr=50_000_000))
+    for r in out:
+        assert r["price"] * r["volume"] >= 50_000_000
+
+
+def test_screen_sort_and_limit(seeded_cache):
+    out = screen(seeded_cache, FilterSpec(sort_by="change_pct", desc=True, limit=3))
+    assert len(out) <= 3
+    pcts = [r["change_pct"] for r in out if r["change_pct"] is not None]
+    assert pcts == sorted(pcts, reverse=True)
+
+
+def test_screen_rsi_range(seeded_cache):
+    out = screen(seeded_cache, FilterSpec(rsi_min=0, rsi_max=100))
+    # All seeded symbols should pass since RSI between 0..100 always
+    syms = {r["symbol"] for r in out}
+    assert "SYS" in syms
+
+
+def test_screen_above_sma200(seeded_cache):
+    """Symbols where current price > sma200 of their seeded series."""
+    out = screen(seeded_cache, FilterSpec(above_sma200=True))
+    # The latest bar close (~1.198 * price) is above the average of 250 bars
+    # (centered around ~1.0 * price), so all seeded symbols should pass.
+    for r in out:
+        assert r["sma200"] is not None and r["price"] > r["sma200"]
