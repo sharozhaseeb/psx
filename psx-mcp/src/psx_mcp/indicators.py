@@ -63,6 +63,21 @@ def atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> 
     return tr.ewm(alpha=1 / window, adjust=False).mean()
 
 
+def donchian(closes: pd.Series, window: int) -> tuple[float | None, float | None]:
+    """Returns (highest, lowest) over the last `window` closes; (None, None) if insufficient data."""
+    if len(closes) < window:
+        return (None, None)
+    tail = closes.iloc[-window:]
+    return (float(tail.max()), float(tail.min()))
+
+
+def returns_window(closes: pd.Series, lookback: int) -> float | None:
+    """Pct change between latest close and the close `lookback` bars ago. None if too short."""
+    if len(closes) <= lookback:
+        return None
+    return float(closes.iloc[-1] / closes.iloc[-1 - lookback] - 1.0)
+
+
 Cross = Literal["crosses_above", "crosses_below"]
 
 

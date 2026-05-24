@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 from psx_mcp.indicators import (
     rsi, sma, ema, macd, bollinger, volume_zscore, last_crosses,
+    donchian, returns_window,
 )
 
 
@@ -80,3 +81,27 @@ def test_no_cross_when_flat():
     a = pd.Series([1.0, 1.0, 1.0, 1.0])
     b = pd.Series([2.0, 2.0, 2.0, 2.0])
     assert last_crosses(a, b, "crosses_above") is False
+
+
+def test_donchian_returns_max_min_of_window():
+    closes = pd.Series(list(range(1, 60)))  # 1..59
+    hi, lo = donchian(closes, 20)
+    assert hi == 59.0
+    assert lo == 40.0
+
+
+def test_donchian_insufficient_data():
+    closes = pd.Series([1.0, 2.0, 3.0])
+    hi, lo = donchian(closes, 10)
+    assert hi is None
+    assert lo is None
+
+
+def test_returns_window_pct_change():
+    closes = pd.Series([100.0, 102.0, 105.0, 110.0])
+    assert returns_window(closes, 3) == pytest.approx(0.10)  # (110/100 - 1)
+
+
+def test_returns_window_insufficient_data():
+    closes = pd.Series([100.0, 102.0])
+    assert returns_window(closes, 5) is None
