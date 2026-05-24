@@ -241,3 +241,22 @@ def test_closes_for_with_dates_returns_ordered_pairs(tmp_path):
     assert dates == sorted(dates)
     closes = [c for _, c in out]
     assert closes == [100.0, 101.0, 102.0, 103.0, 104.0]
+
+
+def test_cache_status_reports_table_counts_and_freshness(tmp_path):
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from datetime import datetime, date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_symbol("XYZ", "X", "TECH", None)
+    cache.upsert_quote(symbol="XYZ", ts=datetime(2026, 5, 23, 10, 0),
+                       price=100.0, change=1.0, volume=1000,
+                       day_high=101, day_low=99,
+                       fetched_at=datetime(2026, 5, 23, 10, 0))
+    cache.upsert_bars([Bar(symbol="XYZ", date=date(2026, 5, 23),
+                            open=100.0, high=101.0, low=99.0, close=100.0, volume=1000)])
+    status = cache.cache_status()
+    assert status["symbols"]["count"] == 1
+    assert status["quotes"]["count"] == 1
+    assert status["bars_daily"]["count"] == 1
+    assert "latest_refreshed_at" in status["symbols"]

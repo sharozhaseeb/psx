@@ -399,6 +399,19 @@ class FullAnalysisResponse(Disclaimer):
     warnings: list[str] = []
 
 
+class CacheStatusResponse(Disclaimer):
+    tables: dict[str, dict]
+    note: Optional[str] = None
+
+
+class BulkRefreshResponse(Disclaimer):
+    requested: list[str]
+    succeeded: list[str]
+    failed: list[dict]  # [{symbol, error}, ...]
+    elapsed_seconds: float
+    note: Optional[str] = None
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str

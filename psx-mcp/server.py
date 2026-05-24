@@ -1,5 +1,6 @@
 """PSX MCP server — FastMCP entrypoint with sync impl helpers + async tool wrappers."""
 from __future__ import annotations
+import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -29,6 +30,7 @@ from psx_mcp.models import (
     RelativeStrengthResponse, CorrelationMatrixResponse,
     SectorRankResponse, UniverseRankResponse,
     FullAnalysisResponse, PositionSizeResponse,
+    CacheStatusResponse, BulkRefreshResponse,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
 from psx_mcp.ranking import (
@@ -1165,6 +1167,78 @@ async def get_dividend_history(symbol: str) -> list[DividendEvent]:
     """Cached dividend events for symbol, newest ex-date first.
     Call refresh_dividends(symbol) first to populate."""
     return _get_dividend_history_impl(_cache, symbol)
+
+
+# ---- cache diagnostics + bulk refresh ----
+
+def _get_cache_status_impl(cache: Cache) -> CacheStatusResponse:
+    tables = cache.cache_status()
+    note = None
+    if not any(t["count"] for t in tables.values()):
+        note = "Cache is empty. Start with refresh_market then refresh_history(symbol)."
+    return CacheStatusResponse(tables=tables, note=note)
+
+
+async def _refresh_universe_impl(cache: Cache,
+                                  client: Optional[PSXClient],
+                                  symbols: Optional[list[str]] = None,
+                                  sector: Optional[str] = None) -> BulkRefreshResponse:
+    """Bulk refresh history. Resolution: symbols > sector > all-with-quotes."""
+    if client is None:
+        return BulkRefreshResponse(
+            requested=[], succeeded=[], failed=[], elapsed_seconds=0.0,
+            note=("No PSX client configured (server.set_dependencies(client=...) "
+                  "was called with None). Cannot fetch."),
+        )
+    if symbols:
+        targets = [s.upper() for s in symbols]
+    elif sector:
+        rows = cache.conn.execute(
+            "SELECT symbol FROM symbols WHERE sector = ?", (sector,)
+        ).fetchall()
+        targets = [r["symbol"] for r in rows]
+    else:
+        rows = cache.conn.execute(
+            "SELECT DISTINCT symbol FROM quotes"
+        ).fetchall()
+        targets = [r["symbol"] for r in rows]
+
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    start = time.time()
+    for sym in targets:
+        try:
+            await _refresh_history_impl(cache, client, sym)
+            succeeded.append(sym)
+        except Exception as e:
+            failed.append({"symbol": sym, "error": str(e)})
+    elapsed = time.time() - start
+    note = None
+    if not targets:
+        note = ("No symbols resolved. Either pass `symbols=[...]`, or call "
+                "refresh_market first to populate the universe.")
+    return BulkRefreshResponse(
+        requested=targets, succeeded=succeeded, failed=failed,
+        elapsed_seconds=elapsed, note=note,
+    )
+
+
+@mcp.tool()
+async def get_cache_status() -> CacheStatusResponse:
+    """Report row counts and latest-refresh timestamp for each cache table.
+    Use this to know what's fresh before relying on screener/score outputs."""
+    return _get_cache_status_impl(_cache)
+
+
+@mcp.tool()
+async def refresh_universe(symbols: list[str] | None = None,
+                            sector: str | None = None) -> BulkRefreshResponse:
+    """Bulk-refresh daily history for many symbols. Resolution order:
+       1. `symbols` if given;
+       2. else all symbols in `sector` if given;
+       3. else all symbols with cached quotes.
+    Slow on the full universe. Use sparingly or pre-filter via `sector`."""
+    return await _refresh_universe_impl(_cache, _client, symbols, sector)
 
 
 if __name__ == "__main__":

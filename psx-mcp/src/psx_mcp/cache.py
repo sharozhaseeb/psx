@@ -554,3 +554,38 @@ class Cache:
             (symbol.upper(),),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- diagnostics ----
+    def cache_status(self) -> dict:
+        """Return per-table row count + max refreshed_at where available."""
+        spec = [
+            ("symbols", "refreshed_at"),
+            ("quotes", "fetched_at"),
+            ("bars_daily", "date"),
+            ("announcements", "posted_at"),
+            ("fundamentals", "refreshed_at"),
+            ("fundamentals_history", "refreshed_at"),
+            ("indices", "refreshed_at"),
+            ("indices_history", "bar_date"),
+            ("dividends", "ex_date"),
+            ("news", "posted_at"),
+        ]
+        out = {}
+        for table, freshness_col in spec:
+            try:
+                count = self.conn.execute(
+                    f"SELECT COUNT(*) FROM {table}"
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                count = 0
+            latest = None
+            if freshness_col and count:
+                try:
+                    row = self.conn.execute(
+                        f"SELECT MAX({freshness_col}) FROM {table}"
+                    ).fetchone()
+                    latest = row[0] if row else None
+                except sqlite3.OperationalError:
+                    latest = None
+            out[table] = {"count": count, "latest_refreshed_at": latest}
+        return out

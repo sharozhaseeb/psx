@@ -811,3 +811,31 @@ def test_compute_position_size_insufficient_bars(tmp_path):
                                            risk_pct=2.0, stop_atr_mult=2.0)
     assert out.qty is None
     assert out.note is not None
+
+
+def test_get_cache_status_empty_cache(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_cache_status_impl(cache)
+    assert out.tables["symbols"]["count"] == 0
+    assert "empty" in (out.note or "").lower()
+
+
+def test_refresh_universe_no_client_returns_note(tmp_path):
+    import asyncio
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = asyncio.run(srv._refresh_universe_impl(cache, None))
+    assert out.requested == []
+    assert out.succeeded == []
+    assert out.failed == []
+    assert out.note is not None
+    assert "no psx client" in out.note.lower()
