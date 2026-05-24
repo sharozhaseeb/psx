@@ -122,6 +122,39 @@ class Cache:
         fetched_at = datetime.fromisoformat(r["fetched_at"])
         return (datetime.now() - fetched_at).total_seconds() < ttl_seconds
 
+    def top_movers(self, n: int = 5) -> dict:
+        """Return top gainers, losers, and volume leaders from latest quotes.
+
+        change_pct is computed as ``change / (price - change) * 100`` using the
+        prev_close-based convention; rows where ``price <= 0`` or
+        ``prev_close <= 0`` are skipped. Each entry is a dict with keys
+        ``symbol``, ``name``, ``price``, ``change_pct``, ``volume``.
+        """
+        rows = self.conn.execute(
+            """SELECT q.symbol, q.price, q.change, q.volume, s.name
+               FROM quotes q LEFT JOIN symbols s ON s.symbol=q.symbol
+               WHERE q.ts = (SELECT MAX(ts) FROM quotes q2 WHERE q2.symbol=q.symbol)
+               AND q.price > 0"""
+        ).fetchall()
+        movers = []
+        for r in rows:
+            d = dict(r)
+            prev_close = d["price"] - d["change"]
+            if prev_close <= 0:
+                continue
+            change_pct = d["change"] / prev_close * 100
+            movers.append({
+                "symbol": d["symbol"],
+                "name": d.get("name"),
+                "price": d["price"],
+                "change_pct": change_pct,
+                "volume": d["volume"],
+            })
+        gainers = sorted(movers, key=lambda m: m["change_pct"], reverse=True)[:n]
+        losers = sorted(movers, key=lambda m: m["change_pct"])[:n]
+        by_volume = sorted(movers, key=lambda m: m["volume"], reverse=True)[:n]
+        return {"gainers": gainers, "losers": losers, "by_volume": by_volume}
+
     # ---- bars ----
     def upsert_bars(self, bars: Iterable[Bar]) -> None:
         rows = [

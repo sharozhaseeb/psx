@@ -110,6 +110,45 @@ def test_fifty_two_week_returns_zero_when_no_history(cache):
     assert lo == 0.0
 
 
+def test_top_movers_returns_sorted_gainers_and_losers(tmp_path):
+    cache = Cache(str(tmp_path / "c.db"))
+    quotes = [
+        ("AAA", 100.0, 5.0, 1000),
+        ("BBB", 100.0, 3.0, 2000),
+        ("CCC", 100.0, 1.0, 3000),
+        ("DDD", 100.0, -2.0, 4000),
+        ("EEE", 100.0, -4.0, 5000),
+    ]
+    ts = datetime(2026, 5, 23, 10, 0)
+    for sym, price, change, volume in quotes:
+        cache.upsert_quote(symbol=sym, ts=ts, price=price, change=change,
+                           volume=volume, day_high=price + 1, day_low=price - 1,
+                           fetched_at=ts)
+    movers = cache.top_movers(n=2)
+    # gainers: descending change_pct order
+    assert [m["symbol"] for m in movers["gainers"]] == ["AAA", "BBB"]
+    # losers: ascending change_pct order (most negative first)
+    assert [m["symbol"] for m in movers["losers"]] == ["EEE", "DDD"]
+
+
+def test_top_movers_skips_invalid_prev_close(tmp_path):
+    cache = Cache(str(tmp_path / "c.db"))
+    ts = datetime(2026, 5, 23, 10, 0)
+    # change == price -> prev_close == 0, should be skipped
+    cache.upsert_quote(symbol="ZERO", ts=ts, price=10.0, change=10.0,
+                       volume=100, day_high=11, day_low=9, fetched_at=ts)
+    # price 0 -> filtered by WHERE clause
+    cache.upsert_quote(symbol="DEAD", ts=ts, price=0.0, change=0.0,
+                       volume=0, day_high=0, day_low=0, fetched_at=ts)
+    cache.upsert_quote(symbol="GOOD", ts=ts, price=50.0, change=2.0,
+                       volume=500, day_high=51, day_low=49, fetched_at=ts)
+    movers = cache.top_movers(n=5)
+    # ZERO and DEAD are excluded; only GOOD remains
+    assert [m["symbol"] for m in movers["gainers"]] == ["GOOD"]
+    assert [m["symbol"] for m in movers["losers"]] == ["GOOD"]
+    assert [m["symbol"] for m in movers["by_volume"]] == ["GOOD"]
+
+
 def test_fifty_two_week_handles_partial_history(cache):
     import datetime as dt
     base = dt.date(2025, 1, 1)

@@ -193,28 +193,11 @@ def _get_market_summary_impl(cache: Cache) -> MarketSummary:
 
 
 def _get_top_movers_impl(cache: Cache, kind: str = "gainers", limit: int = 10) -> list[Mover]:
-    rows = cache.conn.execute(
-        """SELECT q.symbol, q.price, q.change, q.volume, s.name
-           FROM quotes q LEFT JOIN symbols s ON s.symbol=q.symbol
-           WHERE q.ts = (SELECT MAX(ts) FROM quotes q2 WHERE q2.symbol=q.symbol)
-           AND q.price > 0"""
-    ).fetchall()
-    movers = []
-    for r in rows:
-        d = dict(r)
-        prev_close = d["price"] - d["change"]
-        change_pct = (d["change"] / prev_close * 100) if prev_close > 0 else 0.0
-        movers.append(Mover(symbol=d["symbol"], name=d.get("name"),
-                            price=d["price"], change_pct=change_pct, volume=d["volume"]))
-    if kind == "gainers":
-        movers.sort(key=lambda m: m.change_pct, reverse=True)
-    elif kind == "losers":
-        movers.sort(key=lambda m: m.change_pct)
-    elif kind == "volume":
-        movers.sort(key=lambda m: m.volume, reverse=True)
-    else:
+    if kind not in {"gainers", "losers", "volume"}:
         raise ValueError(f"unknown kind: {kind}")
-    return movers[:limit]
+    movers = cache.top_movers(n=limit)
+    key = "by_volume" if kind == "volume" else kind
+    return [Mover(**m) for m in movers[key]]
 
 
 @mcp.tool()
