@@ -240,3 +240,8 @@ class ComparisonRow(BaseModel):
 class ComparisonTable(Disclaimer):
     metrics: list[str]
     rows: list[ComparisonRow]
+
+
+class ScreenResponse(Disclaimer):
+    results: list[dict]
+    count: int

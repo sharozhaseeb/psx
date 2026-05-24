@@ -22,8 +22,9 @@ from psx_mcp.models import (
     Quote, Bar, SymbolMatch, MarketSummary, Mover, CompanyInfo, Fundamentals,
     FinancialStatement, Announcement, NewsItem, WatchEntry, AlertRule,
     AlertCondition, AlertHit, VolumeSpike, ComparisonTable, ComparisonRow,
-    DEFAULT_DISCLAIMER,
+    ScreenResponse, DEFAULT_DISCLAIMER,
 )
+from psx_mcp.screener import screen, FilterSpec
 from psx_mcp.logging_config import configure_logging, get_logger
 
 mcp = FastMCP(
@@ -548,6 +549,52 @@ async def scan_volume_spikes(symbols: Optional[list[str]] = None,
 async def compare_symbols(symbols: list[str], metrics: list[str]) -> ComparisonTable:
     """Side-by-side metric table. metrics: price | rsi14 | sma50 | sma200 | pe | eps | div_yield | …"""
     return _compare_symbols_impl(_cache, symbols, metrics)
+
+
+def _screen_symbols_impl(cache, **kwargs) -> ScreenResponse:
+    # Filter only non-None kwargs to use FilterSpec defaults
+    spec_kwargs = {k: v for k, v in kwargs.items() if v is not None}
+    spec = FilterSpec(**spec_kwargs)
+    rows = screen(cache, spec)
+    return ScreenResponse(results=rows, count=len(rows))
+
+
+@mcp.tool()
+async def screen_symbols(
+    sector: str | None = None,
+    sectors: list[str] | None = None,
+    pe_min: float | None = None,
+    pe_max: float | None = None,
+    eps_min: float | None = None,
+    price_min: float | None = None,
+    price_max: float | None = None,
+    rsi_min: float | None = None,
+    rsi_max: float | None = None,
+    above_sma200: bool | None = None,
+    sma20_gt_sma50: bool | None = None,
+    min_volume: int | None = None,
+    min_turnover_pkr: float | None = None,
+    sort_by: str = "symbol",
+    desc: bool = False,
+    limit: int = 50,
+) -> ScreenResponse:
+    """Multi-criteria screener. Returns symbols matching ALL filters.
+
+    Common workflows:
+    - Value: pe_max=10, eps_min=5, sort_by="pe"
+    - Tech leaders: sector="TECHNOLOGY & COMMUNICATION", above_sma200=True
+    - Liquid movers: min_turnover_pkr=50_000_000, sort_by="change_pct", desc=True
+    """
+    return _screen_symbols_impl(
+        _cache,
+        sector=sector, sectors=sectors,
+        pe_min=pe_min, pe_max=pe_max, eps_min=eps_min,
+        price_min=price_min, price_max=price_max,
+        rsi_min=rsi_min, rsi_max=rsi_max,
+        above_sma200=above_sma200, sma20_gt_sma50=sma20_gt_sma50,
+        min_volume=min_volume, min_turnover_pkr=min_turnover_pkr,
+        sort_by=sort_by, desc=desc, limit=limit,
+    )
 
 
 if __name__ == "__main__":

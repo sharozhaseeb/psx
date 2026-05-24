@@ -367,3 +367,46 @@ def test_search_symbol_matches_sector(tmp_path):
     syms = {r.symbol for r in out}
     assert "SYS" in syms
     assert "NETSOL" in syms
+
+
+def test_screen_symbols_tool_returns_results(tmp_path):
+    """Test the screen_symbols impl returns sector-matched results."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime, date, timedelta
+
+    cache = Cache(str(tmp_path / "c.db"))
+    # Seed minimal universe with 250 bars per symbol for indicators
+    universe = [
+        ("SYS", "Systems Limited", "TECHNOLOGY & COMMUNICATION", 600.0, 5.0, 100_000, 12.0, 5.46),
+        ("HUBC", "Hub Power", "POWER GENERATION & DISTRIBUTION", 130.0, 1.0, 200_000, 5.0, 26.0),
+    ]
+    ts = datetime(2026, 5, 23, 10, 0)
+    today = date(2026, 5, 23)
+    for sym, name, sector, price, change, volume, pe, eps in universe:
+        cache.upsert_symbol(sym, name, sector, None)
+        cache.upsert_quote(symbol=sym, ts=ts, price=price, change=change,
+                           volume=volume, day_high=price+1, day_low=price-1,
+                           fetched_at=ts)
+        cache.upsert_fundamentals(symbol=sym, eps=eps, pe=pe, pb=None,
+                                  div_yield=None, payout=None, roe=None)
+        bars = []
+        for i in range(250):
+            d = today - timedelta(days=250 - i)
+            close = price * (0.8 + i / 250 * 0.4)
+            bars.append(Bar(symbol=sym, date=d, open=close, high=close*1.01,
+                            low=close*0.99, close=close, volume=volume))
+        cache.upsert_bars(bars)
+
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    out = srv._screen_symbols_impl(
+        cache, sector="TECHNOLOGY & COMMUNICATION",
+        pe_max=20, rsi_min=0, rsi_max=100, limit=10,
+    )
+    assert out.disclaimer is not None
+    assert isinstance(out.results, list)
+    assert out.count == len(out.results)
+    for r in out.results:
+        assert r["sector"] == "TECHNOLOGY & COMMUNICATION"
