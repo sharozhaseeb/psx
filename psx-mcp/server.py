@@ -23,9 +23,10 @@ from psx_mcp.models import (
     FundamentalsHistoryPoint, IndexHistoryPoint, FinancialStatement,
     Announcement, NewsItem, WatchEntry, AlertRule, AlertCondition, AlertHit,
     VolumeSpike, ComparisonTable, ComparisonRow, ScreenResponse,
-    SectorSummaryResponse, DEFAULT_DISCLAIMER,
+    SectorSummaryResponse, BetaResponse, DEFAULT_DISCLAIMER,
 )
 from psx_mcp.screener import screen, FilterSpec, sector_summary
+from psx_mcp.beta import beta
 from psx_mcp.logging_config import configure_logging, get_logger
 
 mcp = FastMCP(
@@ -653,6 +654,58 @@ async def get_sector_summary(sector: str) -> SectorSummaryResponse:
     quick triage before drilling into individual names.
     """
     return _get_sector_summary_impl(_cache, sector)
+
+
+def _compute_beta_impl(cache: Cache, symbol: str,
+                       index_code: str = "KSE100",
+                       window: int = 252) -> BetaResponse:
+    """Date-align stock bars and index EOD history, then OLS on returns.
+
+    Both `closes_for` and `get_index_history` return oldest-first. We intersect
+    on date to compute aligned returns — required because stock and index may
+    have different trading-day coverage in the cache.
+    """
+    # NOTE: Raw cache.conn.execute is used here because closes_for(symbol)
+    # only returns floats without dates, and we need date-aligned pairs.
+    # TODO (Part 3): add Cache.closes_for_with_dates(symbol) helper and switch
+    # this back to use it — keeps the Phase-1 layering refactor intact.
+    stock_rows = cache.conn.execute(
+        "SELECT date, close FROM bars_daily WHERE symbol=? ORDER BY date ASC",
+        (symbol.upper(),),
+    ).fetchall()
+    stock_by_date = {r["date"]: r["close"] for r in stock_rows}
+    idx_rows = cache.get_index_history(index_code)
+    idx_by_date = {r["bar_date"]: r["close"] for r in idx_rows}
+    common_dates = sorted(set(stock_by_date) & set(idx_by_date))
+    if len(common_dates) < 2:
+        return BetaResponse(
+            symbol=symbol.upper(), index_code=index_code, window=window,
+            beta=None, alpha=None, r_squared=None, n=0,
+            note=(f"Insufficient overlap: stock has {len(stock_by_date)} bars, "
+                  f"index has {len(idx_by_date)} bars, common dates {len(common_dates)}. "
+                  f"Call refresh_history({symbol!r}) and refresh_market first."),
+        )
+    stock_closes = pd.Series([stock_by_date[d] for d in common_dates])
+    idx_closes   = pd.Series([idx_by_date[d]   for d in common_dates])
+    result = beta(stock_closes=stock_closes, index_closes=idx_closes, window=window)
+    return BetaResponse(
+        symbol=symbol.upper(), index_code=index_code, window=window,
+        beta=result["beta"], alpha=result["alpha"],
+        r_squared=result["r_squared"], n=result["n"],
+        note=None,
+    )
+
+
+@mcp.tool()
+async def compute_beta(symbol: str, index_code: str = "KSE100",
+                       window: int = 252) -> BetaResponse:
+    """Beta of symbol vs index, computed on date-aligned EOD returns.
+    window=252 ~ 1 trading year.
+    Both series are sourced from cached daily data (bars_daily for the stock,
+    indices_history for the index — populated from /timeseries/eod on each
+    refresh_market call). Call refresh_history(symbol) and refresh_market once
+    before this for full coverage."""
+    return _compute_beta_impl(_cache, symbol, index_code, window)
 
 
 if __name__ == "__main__":

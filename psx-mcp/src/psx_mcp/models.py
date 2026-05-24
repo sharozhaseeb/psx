@@ -289,3 +289,14 @@ class SectorSummaryResponse(Disclaimer):
     pct_above_sma200: Optional[float] = None
     top_5_by_change: list[dict] = []
     bottom_5_by_change: list[dict] = []
+
+
+class BetaResponse(Disclaimer):
+    symbol: str
+    index_code: str
+    window: int
+    beta: Optional[float]
+    alpha: Optional[float]
+    r_squared: Optional[float]
+    n: int
+    note: Optional[str] = None

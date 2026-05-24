@@ -478,3 +478,51 @@ def test_get_fundamentals_history_empty(tmp_path):
                          client=None)
     out = srv._get_fundamentals_history_impl(cache, "NOSUCH")
     assert out == []
+
+
+def test_compute_beta_with_seeded_series(tmp_path):
+    """Beta of a symbol whose returns equal index returns should be ~1."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 23)
+    bars = []
+    for i in range(100):
+        d = today - timedelta(days=99 - i)
+        close = 100.0 * (1 + i * 0.01)
+        bars.append(Bar(symbol="XYZ", date=d, open=close, high=close*1.01,
+                        low=close*0.99, close=close, volume=1000))
+        cache.upsert_index_bar(index_code="KSE100", bar_date=d,
+                               close=close, volume=1e8)
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_beta_impl(cache, "XYZ")
+    assert out.beta == pytest.approx(1.0, abs=0.01)
+    assert out.r_squared == pytest.approx(1.0, abs=0.01)
+
+
+def test_compute_beta_insufficient_overlap_returns_none_with_note(tmp_path):
+    """If bar dates and index dates don't overlap, beta is None and note explains."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_bars([Bar(symbol="XYZ", date=date(2024, 1, 1) + timedelta(days=i),
+                            open=100.0, high=101.0, low=99.0, close=100.0 + i, volume=1)
+                       for i in range(50)])
+    for i in range(50):
+        cache.upsert_index_bar(index_code="KSE100",
+                                bar_date=date(2026, 5, 1) + timedelta(days=i),
+                                close=170000.0 + i, volume=1e8)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_beta_impl(cache, "XYZ")
+    assert out.beta is None
+    assert out.n == 0
+    assert out.note and "overlap" in out.note.lower()
