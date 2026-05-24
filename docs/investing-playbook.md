@@ -16,9 +16,11 @@ These are gaps observed while doing real research with the current 24 tools. Eac
 | **KSE-100 / KSE-30 / All-Share index values** ✅ *Resolved in analytics-v1* | Sector and stock returns are meaningless without a benchmark | `get_market_summary` now populated from cached `indices` table (refreshed alongside market-watch) |
 | **News bodies / announcement text** ⚠ *Partial (analytics-v1)* | Got 40 news IDs cached, but `get_news` returned `[]` — only titles or nothing | Announcement `url` (PSX detail page) is now propagated; full body extraction still deferred |
 | **Sector aggregates** ✅ *Resolved in analytics-v1* (`get_sector_summary`) | "Show me sector P/E, sector avg RSI, leaders/laggards within sector" | New tool returns member count, breadth, median PE, top/bottom 5 by change_pct |
-| **Dividend history** | Yield, payout, growth — core to any income/quality strategy | `div_yield` / `payout` always `null` |
-| **Quality metrics** | ROE, ROA, ROIC, debt/equity, current ratio — fundamental quality filters | `roe` / `pb` always `null` |
+| **Dividend history** ✅ *Resolved in analytics-v2* | Yield, payout, growth — core to any income/quality strategy | `get_dividend_history(symbol)` returns cached ex-dates (populated by `refresh_dividends` via `/company/payouts`) |
+| **Quality metrics (ROE / ROIC / debt ratios)** ⚠ *Partial (analytics-v2)* | ROE, ROA, ROIC, debt/equity, current ratio — fundamental quality filters | `screen_symbols` accepts `roe_min` / `pb_max` / `div_yield_min` — but the underlying columns are still null until Part 3 lands the headless-browser sub-tab fetch (Phase 0 confirmed Ratios sub-tab is SPA-rendered) |
 | **Volume averages (20d, 50d)** | Today's volume only means something relative to baseline | `scan_volume_spikes` exists but raw avg isn't exposed |
+| **Beta computation** ✅ *NEW in analytics-v2* | Risk decomposition, low-beta / BAB strategies | `compute_beta(symbol, index_code="KSE100", window=252)` runs OLS over date-aligned EOD returns |
+| **4-quadrant composite scoring** ✅ *NEW in analytics-v2* | Value / Quality / Momentum / Trend synthesis from Part 3 of this playbook | `compute_4quadrant_score(symbol)` returns sub-scores + total in [0, 4]; `compute_quality_score(symbol)` returns the standalone quality component |
 | **Free float % / shares outstanding history** | Detect dilution, bonus issues | `free_float` partially populated, no history |
 | **Corporate actions calendar** | Bonus shares, splits, rights, dividend ex-dates | No tool; SYS FY24 EPS looks "crashed" without action history |
 | **Insider / director transactions** | Strongest short-term signal in EM markets | No tool |
@@ -305,12 +307,12 @@ Compute from history table the MCP already has:
 
 | Tool | Signature | Purpose |
 |---|---|---|
-| `compute_quality_score` | `(symbol)` | Piotroski F-score variant (1–9) |
+| ~~`compute_quality_score`~~ | `(symbol)` | ✅ *Delivered analytics-v2* — composite quality in [0, 1] from ROE + EPS trend (partial: needs ROE population per Part 3 to reach full Piotroski coverage) |
 | `compute_value_score` | `(symbol)` | Combined EY + BY + FCFY rank within sector |
 | `compute_momentum_score` | `(symbol)` | 12-1 risk-adjusted return, percentile |
-| `compute_4quadrant_score` | `(symbol)` | The synthesis from Part 3 |
+| ~~`compute_4quadrant_score`~~ | `(symbol)` | ✅ *Delivered analytics-v2* — Value / Quality / Momentum / Trend composite in [0, 4] |
 | `rank_symbols` | `(by: "value"\|"quality"\|"momentum"\|"composite", sector?)` | Cross-sectional ranking |
-| `compute_beta` | `(symbol, window=252)` | Beta vs KSE-100 |
+| ~~`compute_beta`~~ | `(symbol, index_code="KSE100", window=252)` | ✅ *Delivered analytics-v2* — OLS beta vs cached index EOD series |
 | `simulate_basket` | `(weights: dict, since)` | Backtest a basket against KSE-100 |
 
 ### P3 — News & sentiment
@@ -352,6 +354,8 @@ Build on the financials already cached. F-score is the showcase win.
 
 **Week 5+ — News aggregation**
 Three RSS feeds (BR, Dawn, Tribune) + a per-symbol headline filter. Avoid sentiment modeling — use the LLM at query time.
+
+**Status (2026-05-24):** `analytics-v2` ships dividend history, index EOD series, beta, and composite scoring. Part 3 will populate ROE / P/B / payout-ratio via a headless-browser Ratios sub-tab fetch and add the full Piotroski F-Score on top of the resulting balance-sheet coverage.
 
 ---
 
