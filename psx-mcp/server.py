@@ -210,11 +210,13 @@ def _get_market_summary_impl(cache: Cache) -> MarketSummary:
         except (ValueError, TypeError):
             stale = True
 
-    summary = (
-        f"KSE-100 at {kse100.get('value'):.2f} ({kse100.get('change_pct'):+.2f}%)"
-        if (not stale and kse100)
-        else "KSE-100 snapshot — call refresh_market() first if stale."
-    )
+    kse100_val = kse100.get('value') if kse100 else None
+    kse100_chg = kse100.get('change_pct') if kse100 else None
+    if not stale and kse100_val is not None:
+        chg = kse100_chg if kse100_chg is not None else 0.0
+        summary = f"KSE-100 at {kse100_val:.2f} ({chg:+.2f}%)"
+    else:
+        summary = "KSE-100 snapshot — call refresh_market() first if stale."
 
     return MarketSummary(
         kse100=kse100.get("value") or 0.0,

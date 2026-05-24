@@ -95,6 +95,20 @@ def test_fetch_indices_skips_failing_index(monkeypatch):
     assert codes == {"KSE100", "ALLSHR"}
 
 
+def test_fetch_indices_refreshed_at_is_utc_iso(monkeypatch):
+    """refreshed_at should be a UTC ISO string ending in '+00:00'."""
+    import asyncio
+    from psx_mcp.psx_client import PSXClient
+    fake = {"data": [[1779360000, 167000.0, 100_000_000, 167000.0]]}
+    async def fake_get(self, url):
+        import json as _j
+        return _j.dumps(fake)
+    monkeypatch.setattr(PSXClient, "_get", fake_get)
+    out = asyncio.run(PSXClient().fetch_indices(codes=["KSE100"]))
+    assert len(out) == 1
+    assert out[0]["refreshed_at"].endswith("+00:00")
+
+
 def test_fetch_indices_skips_empty_data(monkeypatch):
     """Empty data array → index dropped, no exception."""
     import json as _json

@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from typing import Optional, Union
 
 import httpx
@@ -188,7 +188,7 @@ class PSXClient:
                     "change": change,
                     "change_pct": change_pct,
                     "volume": volume or 0.0,
-                    "refreshed_at": datetime.now().isoformat(),
+                    "refreshed_at": datetime.now(timezone.utc).isoformat(),
                 })
             except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError) as e:
                 log.warning("index_fetch_failed", code=code, error=str(e))
