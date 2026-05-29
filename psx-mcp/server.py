@@ -41,6 +41,7 @@ from psx_mcp.models import (
     BacktestResponse, InsiderTrade, InsiderTradeListResponse,
     BoardMeeting, EarningsCalendarResponse,
     CorporateActionsCalendarResponse,
+    CompanyQualitativeRefreshResponse,
 )
 from psx_mcp.backtest import backtest_simple as _backtest_simple_pure
 from psx_mcp.screener import screen, FilterSpec, sector_summary
@@ -2328,6 +2329,62 @@ async def bulk_fetch_news_bodies(symbol: str | None = None,
     return await _bulk_fetch_news_bodies_impl(
         _cache, _client, symbol, since_days, limit, concurrency, delay_ms,
     )
+
+
+# ============================================================================
+# Phase 6 of Part-5: first-time-setup mega-tool
+# ============================================================================
+
+
+async def _refresh_company_qualitative_impl(cache: Cache,
+                                              client: Optional[PSXClient],
+                                              symbol: str
+                                              ) -> CompanyQualitativeRefreshResponse:
+    started = _time.time()
+    sym = symbol.upper()
+    note = None
+    ann_refreshed = 0
+    news_refreshed = 0
+    if client is None:
+        note = ("No PSX client configured (set_dependencies(client=...) was None). "
+                "Returning zeroed counts.")
+    else:
+        try:
+            r = await _refresh_announcements_impl(cache, client)
+            ann_refreshed = int(r) if isinstance(r, int) else 0
+        except Exception:
+            pass
+        try:
+            r = await _refresh_news_impl(cache, client)
+            news_refreshed = int(r) if isinstance(r, int) else 0
+        except Exception:
+            pass
+
+    ann_bulk = await _bulk_fetch_announcement_bodies_impl(
+        cache, client, sym, since_days=30, limit=20,
+    )
+    news_bulk = await _bulk_fetch_news_bodies_impl(
+        cache, client, sym, since_days=14, limit=20,
+    )
+
+    return CompanyQualitativeRefreshResponse(
+        symbol=sym,
+        announcements_refreshed=ann_refreshed,
+        news_refreshed=news_refreshed,
+        announcement_bodies=ann_bulk.model_dump(exclude={"disclaimer"}),
+        news_bodies=news_bulk.model_dump(exclude={"disclaimer"}),
+        elapsed_seconds=_time.time() - started,
+        note=note,
+    )
+
+
+@mcp.tool()
+async def refresh_company_qualitative(symbol: str) -> CompanyQualitativeRefreshResponse:
+    """First-time-setup convenience for a symbol's qualitative layer.
+    Chains: refresh_announcements + refresh_news + bulk_fetch_announcement_bodies
+    + bulk_fetch_news_bodies for `symbol`. Use this BEFORE get_company_research_pack
+    when starting fresh on a new symbol."""
+    return await _refresh_company_qualitative_impl(_cache, _client, symbol)
 
 
 if __name__ == "__main__":

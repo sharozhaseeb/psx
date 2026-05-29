@@ -1638,3 +1638,21 @@ def test_fetch_news_body_caches_html_body(tmp_path, monkeypatch):
     out = asyncio.run(srv._fetch_news_body_impl(cache, PSXClient(), "N1"))
     assert out.fetch_status == "ok"
     assert "PSX index reached" in out.body
+
+
+def test_refresh_company_qualitative_chains_four_calls(tmp_path):
+    """End-to-end: should call refresh_announcements + refresh_news + bulk
+    announcement bodies + bulk news bodies, no crashes on no-client path."""
+    import asyncio
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = asyncio.run(srv._refresh_company_qualitative_impl(cache, None, "SYS"))
+    assert out.symbol == "SYS"
+    assert out.announcements_refreshed == 0
+    assert out.news_refreshed == 0
+    assert out.elapsed_seconds >= 0

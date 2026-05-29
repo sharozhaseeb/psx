@@ -649,3 +649,13 @@ class CorporateActionsCalendarResponse(Disclaimer):
     dividend_events: list[dict]
     board_meetings: list[dict]
     note: Optional[str] = None
+
+
+class CompanyQualitativeRefreshResponse(Disclaimer):
+    symbol: str
+    announcements_refreshed: int
+    news_refreshed: int
+    announcement_bodies: dict
+    news_bodies: dict
+    elapsed_seconds: float
+    note: Optional[str] = None
