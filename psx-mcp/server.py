@@ -40,6 +40,7 @@ from psx_mcp.models import (
     UpcomingEventsResponse, WatchlistWithScoresResponse,
     BacktestResponse, InsiderTrade, InsiderTradeListResponse,
     BoardMeeting, EarningsCalendarResponse,
+    CorporateActionsCalendarResponse,
 )
 from psx_mcp.backtest import backtest_simple as _backtest_simple_pure
 from psx_mcp.screener import screen, FilterSpec, sector_summary
@@ -1746,6 +1747,52 @@ async def get_earnings_calendar(symbol: str,
     next_meeting field is the earliest upcoming meeting (>= today). Populated
     by fetch_announcement_body parsing of board-meeting notices."""
     return _get_earnings_calendar_impl(_cache, symbol, lookback_days, forward_days)
+
+
+# ---- corporate actions calendar ----
+
+def _get_corporate_actions_calendar_impl(cache: Cache, symbol: str,
+                                            lookback_days: int = 30,
+                                            forward_days: int = 60
+                                            ) -> CorporateActionsCalendarResponse:
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    since = today - _td(days=lookback_days)
+    until = today + _td(days=forward_days)
+
+    div_rows = cache.get_dividend_history(symbol)
+    div_events = []
+    for d in div_rows:
+        ref = d.get("ex_date") or d.get("announcement_date")
+        if not ref:
+            continue
+        ref_date = _date.fromisoformat(ref)
+        if since <= ref_date <= until:
+            div_events.append(d)
+
+    bm_rows = cache.get_board_meetings(symbol, since=since, until=until)
+
+    note = None
+    if not div_events and not bm_rows:
+        note = (f"No corporate actions in window for {symbol}. Call "
+                f"refresh_dividends({symbol!r}) and "
+                f"bulk_fetch_announcement_bodies({symbol!r}).")
+    return CorporateActionsCalendarResponse(
+        symbol=symbol.upper(),
+        lookback_days=lookback_days, forward_days=forward_days,
+        dividend_events=div_events, board_meetings=bm_rows, note=note,
+    )
+
+
+@mcp.tool()
+async def get_corporate_actions_calendar(symbol: str,
+                                            lookback_days: int = 30,
+                                            forward_days: int = 60
+                                            ) -> CorporateActionsCalendarResponse:
+    """Combined view: dividends + board meetings for symbol in
+    [-lookback_days, +forward_days]."""
+    return _get_corporate_actions_calendar_impl(_cache, symbol,
+                                                  lookback_days, forward_days)
 
 
 # ---- cache diagnostics + bulk refresh ----

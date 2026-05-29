@@ -1581,3 +1581,29 @@ def test_get_earnings_calendar_returns_window_and_next_meeting(tmp_path):
     assert len(out.meetings) == 2
     assert out.next_meeting is not None
     assert out.next_meeting.announcement_id == "B2"
+
+
+def test_get_corporate_actions_calendar_merges_dividends_and_meetings(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, datetime, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date.today()
+    cache.upsert_dividend(symbol="FFC", ex_date=today + timedelta(days=10),
+                          announcement_date=today - timedelta(days=5),
+                          payout_type="cash", per_share=8.0, bonus_pct=None,
+                          announcement_id="D1")
+    cache.upsert_board_meeting(
+        announcement_id="B1", symbol="FFC",
+        meeting_date=today + timedelta(days=5),
+        agenda="financial_results",
+        posted_at=datetime.now(),
+    )
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_corporate_actions_calendar_impl(cache, "FFC",
+                                                     lookback_days=30, forward_days=60)
+    assert len(out.dividend_events) == 1
+    assert len(out.board_meetings) == 1

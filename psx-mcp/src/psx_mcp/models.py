@@ -629,3 +629,12 @@ class EarningsCalendarResponse(Disclaimer):
     meetings: list[BoardMeeting]
     next_meeting: Optional[BoardMeeting] = None
     note: Optional[str] = None
+
+
+class CorporateActionsCalendarResponse(Disclaimer):
+    symbol: str
+    lookback_days: int
+    forward_days: int
+    dividend_events: list[dict]
+    board_meetings: list[dict]
+    note: Optional[str] = None
