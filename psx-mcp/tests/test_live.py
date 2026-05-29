@@ -60,3 +60,24 @@ async def test_live_screen_tech_sector(tmp_path):
     finally:
         await client.close()
         cache.close()
+
+
+async def test_live_fetch_and_extract_announcement_pdf():
+    """Fetch a real PSX announcement PDF and verify text is extractable.
+    Skipped unless PSX_LIVE=1."""
+    from psx_mcp.psx_client import PSXClient, parse_announcements
+    from psx_mcp.pdf_extractor import extract_text_or_empty
+
+    client = PSXClient()
+    try:
+        ann_html = await client.fetch_announcements()
+        anns = parse_announcements(ann_html)
+        with_url = [a for a in anns if a.url and "pdf" in a.url.lower()]
+        assert with_url, "no PDF URLs in the announcements feed"
+        sample = with_url[0]
+        pdf_bytes = await client.fetch_url_bytes(sample.url)
+        assert pdf_bytes is not None and len(pdf_bytes) > 100
+        text = extract_text_or_empty(pdf_bytes)
+        assert len(text) > 50, f"got only {len(text)} chars; might be scan-only"
+    finally:
+        await client.close()
