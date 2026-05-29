@@ -531,6 +531,31 @@ class SectorRelativeStrengthResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class AnnouncementBodyResponse(Disclaimer):
+    announcement_id: str
+    symbol: Optional[str] = None
+    title: Optional[str] = None
+    url: Optional[str] = None
+    fetch_status: str
+    body: Optional[str] = None
+    body_chars: int = 0
+    note: Optional[str] = None
+
+
+class BulkBodyFetchResponse(Disclaimer):
+    symbol: Optional[str] = None
+    since_days: int
+    attempted: int = 0
+    succeeded: int = 0
+    skipped_no_url: int = 0
+    failed_http: int = 0
+    failed_scan: int = 0
+    failed_parse: int = 0
+    failed_other: int = 0
+    elapsed_seconds: float = 0.0
+    note: Optional[str] = None
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str

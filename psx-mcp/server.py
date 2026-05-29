@@ -1,7 +1,9 @@
 """PSX MCP server — FastMCP entrypoint with sync impl helpers + async tool wrappers."""
 from __future__ import annotations
+import asyncio
 import re as _re
 import time
+import time as _time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional
@@ -63,6 +65,12 @@ from psx_mcp.models import (
 )
 from psx_mcp.cross_section import (
     z_score, percentile_rank, sector_dispersion, sector_relative_strength,
+)
+from psx_mcp.pdf_extractor import (
+    extract_text_or_empty, is_probably_scan_only,
+)
+from psx_mcp.models import (
+    AnnouncementBodyResponse, BulkBodyFetchResponse,
 )
 from psx_mcp.models import (
     CrossSectionalRankResponse, SectorDispersionResponse,
@@ -1867,6 +1875,171 @@ async def backtest_simple(filter_spec: dict,
     filter_spec keys correspond to FilterSpec fields (pe_max, min_volume, etc.).
     Read `caveats` field carefully before relying on results."""
     return _backtest_simple_impl(_cache, filter_spec, hold_days, since)
+
+
+async def _fetch_announcement_body_impl(cache: Cache, client: PSXClient,
+                                          announcement_id: str
+                                          ) -> AnnouncementBodyResponse:
+    """Fetch + cache the body PDF text for a single announcement.
+
+    Idempotent: if any fetch_status is already set, returns cached body
+    without re-fetching. Never auto-retries — caller can clear fetch_status
+    via raw SQL to force retry."""
+    row = cache.conn.execute(
+        "SELECT symbol, title, url, body, fetch_status FROM announcements "
+        "WHERE id = ?",
+        (announcement_id,),
+    ).fetchone()
+    if not row:
+        return AnnouncementBodyResponse(
+            announcement_id=announcement_id, fetch_status="not_found",
+            note="No announcement with that id in cache.",
+        )
+    if row["fetch_status"]:
+        return AnnouncementBodyResponse(
+            announcement_id=announcement_id, symbol=row["symbol"],
+            title=row["title"], url=row["url"],
+            fetch_status=row["fetch_status"],
+            body=row["body"],
+            body_chars=len(row["body"] or ""),
+            note="Returning cached body; previously fetched.",
+        )
+    if not row["url"]:
+        cache.update_announcement_body(announcement_id, None, "no_url")
+        return AnnouncementBodyResponse(
+            announcement_id=announcement_id, symbol=row["symbol"],
+            title=row["title"], url=None,
+            fetch_status="no_url",
+            note="Announcement has no PDF URL; nothing to fetch.",
+        )
+    if client is None:
+        return AnnouncementBodyResponse(
+            announcement_id=announcement_id, symbol=row["symbol"],
+            title=row["title"], url=row["url"],
+            fetch_status="no_client",
+            note="No PSX client configured (set_dependencies(client=...) was None).",
+        )
+
+    pdf_bytes = await client.fetch_url_bytes(row["url"])
+    if pdf_bytes is None:
+        cache.update_announcement_body(announcement_id, None, "http_error")
+        return AnnouncementBodyResponse(
+            announcement_id=announcement_id, symbol=row["symbol"],
+            title=row["title"], url=row["url"],
+            fetch_status="http_error",
+            note="Network error or non-200 response.",
+        )
+    text = extract_text_or_empty(pdf_bytes)
+    if not text:
+        cache.update_announcement_body(announcement_id, None, "parse_error")
+        return AnnouncementBodyResponse(
+            announcement_id=announcement_id, symbol=row["symbol"],
+            title=row["title"], url=row["url"],
+            fetch_status="parse_error",
+            note="PDF parsed to empty text; might be encrypted or malformed.",
+        )
+    if is_probably_scan_only(text):
+        cache.update_announcement_body(announcement_id, text, "scan_only")
+        return AnnouncementBodyResponse(
+            announcement_id=announcement_id, symbol=row["symbol"],
+            title=row["title"], url=row["url"],
+            fetch_status="scan_only",
+            body=text, body_chars=len(text),
+            note="PDF looks scan-only; OCR would be needed for full text.",
+        )
+    cache.update_announcement_body(announcement_id, text, "ok")
+    return AnnouncementBodyResponse(
+        announcement_id=announcement_id, symbol=row["symbol"],
+        title=row["title"], url=row["url"],
+        fetch_status="ok",
+        body=text, body_chars=len(text),
+    )
+
+
+async def _bulk_fetch_announcement_bodies_impl(cache: Cache, client: PSXClient,
+                                                 symbol: Optional[str],
+                                                 since_days: int = 30,
+                                                 limit: int = 20,
+                                                 concurrency: int = 4,
+                                                 delay_ms: int = 250
+                                                 ) -> BulkBodyFetchResponse:
+    """Concurrent bulk fetch with polite defaults. Per-PDF errors don't kill
+    the batch."""
+    rows = cache.get_announcements_missing_body(symbol=symbol,
+                                                 since_days=since_days,
+                                                 limit=limit)
+    started = _time.time()
+    summary = {"attempted": 0, "succeeded": 0,
+               "skipped_no_url": 0, "failed_http": 0,
+               "failed_scan": 0, "failed_parse": 0,
+               "failed_other": 0}
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def one(rid: str):
+        async with sem:
+            resp = await _fetch_announcement_body_impl(cache, client, rid)
+            if delay_ms > 0:
+                await asyncio.sleep(delay_ms / 1000.0)
+            return resp
+
+    if rows:
+        results = await asyncio.gather(*(one(r["id"]) for r in rows),
+                                         return_exceptions=False)
+    else:
+        results = []
+
+    for resp in results:
+        summary["attempted"] += 1
+        status = resp.fetch_status
+        if status == "ok":
+            summary["succeeded"] += 1
+        elif status == "no_url":
+            summary["skipped_no_url"] += 1
+        elif status == "http_error":
+            summary["failed_http"] += 1
+        elif status == "scan_only":
+            summary["failed_scan"] += 1
+        elif status == "parse_error":
+            summary["failed_parse"] += 1
+        else:
+            summary["failed_other"] += 1
+
+    return BulkBodyFetchResponse(
+        symbol=symbol.upper() if symbol else None,
+        since_days=since_days,
+        attempted=summary["attempted"],
+        succeeded=summary["succeeded"],
+        skipped_no_url=summary["skipped_no_url"],
+        failed_http=summary["failed_http"],
+        failed_scan=summary["failed_scan"],
+        failed_parse=summary["failed_parse"],
+        failed_other=summary["failed_other"],
+        elapsed_seconds=_time.time() - started,
+    )
+
+
+@mcp.tool()
+async def fetch_announcement_body(announcement_id: str) -> AnnouncementBodyResponse:
+    """Fetch + cache the PDF body of a single PSX announcement. Idempotent;
+    returns cached body if previously fetched (regardless of prior status —
+    we never auto-retry; clear fetch_status to force re-fetch)."""
+    return await _fetch_announcement_body_impl(_cache, _client, announcement_id)
+
+
+@mcp.tool()
+async def bulk_fetch_announcement_bodies(symbol: str | None = None,
+                                           since_days: int = 30,
+                                           limit: int = 20,
+                                           concurrency: int = 4,
+                                           delay_ms: int = 250
+                                           ) -> BulkBodyFetchResponse:
+    """Bulk-fetch announcement bodies. Polite defaults: limit=20,
+    concurrency=4, 250ms between requests. Raise these cautiously — PSX may
+    rate-limit aggressive crawlers."""
+    return await _bulk_fetch_announcement_bodies_impl(
+        _cache, _client, symbol, since_days, limit, concurrency, delay_ms,
+    )
 
 
 if __name__ == "__main__":

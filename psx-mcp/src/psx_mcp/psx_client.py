@@ -154,6 +154,17 @@ class PSXClient:
             {"symbol": symbol.upper()},
         )
 
+    async def fetch_url_bytes(self, url: str, timeout: float = 30.0) -> Optional[bytes]:
+        """Fetch arbitrary URL as bytes. Returns None on HTTP error.
+        Reuses the client's own httpx session for connection pooling + headers."""
+        try:
+            r = await self._client.get(url, timeout=timeout, follow_redirects=True)
+        except (httpx.HTTPError, httpx.TimeoutException):
+            return None
+        if r.status_code != 200:
+            return None
+        return r.content
+
     async def fetch_indices(self, codes: Optional[list[str]] = None) -> list[dict]:
         """Fetch latest snapshot for each PSX index via /timeseries/eod/<INDEX>.
 

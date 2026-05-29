@@ -1382,3 +1382,63 @@ def test_rank_sector_relative_strength_uses_defaults(tmp_path):
                                                     window_days=60)
     # Empty index history → each row has a note flagging insufficient history.
     assert len(out.rows) == len(srv.DEFAULT_SECTORS)
+
+
+def test_fetch_announcement_body_caches_pdf_bytes(tmp_path, monkeypatch):
+    """Mock the PDF fetcher; verify body is cached + fetch_status='ok'."""
+    import asyncio
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Announcement
+    from psx_mcp.watchlist import WatchlistStore
+    from psx_mcp.psx_client import PSXClient
+    from datetime import datetime
+
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_announcement(Announcement(
+        id="A1", symbol="SYS", posted_at=datetime.now(),
+        title="Board Meeting", category=None,
+        url="https://dps.psx.com.pk/download/document/1.pdf", body=None,
+    ))
+
+    async def fake_fetch(self, url, timeout=30.0):
+        return b"%PDF-fake-bytes"
+    monkeypatch.setattr(PSXClient, "fetch_url_bytes", fake_fetch)
+    monkeypatch.setattr("server.extract_text_or_empty",
+                         lambda b: "Board meeting on 15-June-2026 to consider results.")
+
+    client = PSXClient()
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=client)
+
+    out = asyncio.run(srv._fetch_announcement_body_impl(cache, client, "A1"))
+    assert out.fetch_status == "ok"
+    assert "Board meeting" in out.body
+    assert out.body_chars > 10
+
+    row = cache.conn.execute(
+        "SELECT body, fetch_status FROM announcements WHERE id='A1'"
+    ).fetchone()
+    assert row["fetch_status"] == "ok"
+    assert "Board meeting" in row["body"]
+
+
+def test_fetch_announcement_body_no_url_returns_no_url_status(tmp_path):
+    """Announcement with no URL → fetch_status='no_url', no fetch attempted."""
+    import asyncio
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Announcement
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import datetime
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_announcement(Announcement(
+        id="A2", symbol="SYS", posted_at=datetime.now(),
+        title="No URL", category=None, url=None, body=None,
+    ))
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = asyncio.run(srv._fetch_announcement_body_impl(cache, None, "A2"))
+    assert out.fetch_status == "no_url"
+    assert out.body is None
