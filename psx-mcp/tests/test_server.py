@@ -1546,3 +1546,38 @@ def test_get_insider_trades_summary_and_net_qty(tmp_path):
     out = srv._get_insider_trades_impl(cache, "SYS", since_days=365)
     assert len(out.trades) == 2
     assert out.net_qty == 10_000 - 3_000
+
+
+def test_get_earnings_calendar_returns_window_and_next_meeting(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, datetime, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date.today()
+    cache.upsert_board_meeting(
+        announcement_id="B1", symbol="SYS",
+        meeting_date=today - timedelta(days=10),
+        agenda="financial_results",
+        posted_at=datetime.now() - timedelta(days=15),
+    )
+    cache.upsert_board_meeting(
+        announcement_id="B2", symbol="SYS",
+        meeting_date=today + timedelta(days=5),
+        agenda="financial_results",
+        posted_at=datetime.now(),
+    )
+    cache.upsert_board_meeting(
+        announcement_id="B3", symbol="SYS",
+        meeting_date=today + timedelta(days=120),
+        agenda="other",
+        posted_at=datetime.now(),
+    )
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_earnings_calendar_impl(cache, "SYS",
+                                           lookback_days=30, forward_days=60)
+    assert len(out.meetings) == 2
+    assert out.next_meeting is not None
+    assert out.next_meeting.announcement_id == "B2"

@@ -603,3 +603,29 @@ class InsiderTradeListResponse(Disclaimer):
     trades: list[InsiderTrade]
     net_qty: Optional[int] = None
     note: Optional[str] = None
+
+
+class BoardMeeting(BaseModel):
+    announcement_id: str
+    symbol: str
+    meeting_date: Optional[date] = None
+    agenda: Optional[str] = None
+    posted_at: str
+
+    @field_validator("meeting_date", mode="before")
+    @classmethod
+    def _coerce_blank(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+
+class EarningsCalendarResponse(Disclaimer):
+    symbol: str
+    lookback_days: int
+    forward_days: int
+    meetings: list[BoardMeeting]
+    next_meeting: Optional[BoardMeeting] = None
+    note: Optional[str] = None

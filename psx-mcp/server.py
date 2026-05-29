@@ -39,6 +39,7 @@ from psx_mcp.models import (
     CacheStatusResponse, BulkRefreshResponse,
     UpcomingEventsResponse, WatchlistWithScoresResponse,
     BacktestResponse, InsiderTrade, InsiderTradeListResponse,
+    BoardMeeting, EarningsCalendarResponse,
 )
 from psx_mcp.backtest import backtest_simple as _backtest_simple_pure
 from psx_mcp.screener import screen, FilterSpec, sector_summary
@@ -1707,6 +1708,44 @@ async def get_insider_trades(symbol: str,
     fetch_announcement_body parses a 'Disclosure of Interest by Director'
     announcement. net_qty is buy total - sell total (positive = net buying)."""
     return _get_insider_trades_impl(_cache, symbol, since_days)
+
+
+# ---- earnings calendar ----
+
+def _get_earnings_calendar_impl(cache: Cache, symbol: str,
+                                  lookback_days: int = 30,
+                                  forward_days: int = 60) -> EarningsCalendarResponse:
+    from datetime import date as _date, timedelta as _td
+    today = _date.today()
+    since = today - _td(days=lookback_days)
+    until = today + _td(days=forward_days)
+    rows = cache.get_board_meetings(symbol, since=since, until=until)
+    meetings = [BoardMeeting(**r) for r in rows]
+    next_m = None
+    upcoming = [m for m in meetings
+                if m.meeting_date is not None and m.meeting_date >= today]
+    if upcoming:
+        next_m = min(upcoming, key=lambda m: m.meeting_date)
+    note = None
+    if not meetings:
+        note = (f"No board meetings cached for {symbol}. Call "
+                f"bulk_fetch_announcement_bodies({symbol!r}) to extract from "
+                f"announcement PDFs.")
+    return EarningsCalendarResponse(
+        symbol=symbol.upper(),
+        lookback_days=lookback_days, forward_days=forward_days,
+        meetings=meetings, next_meeting=next_m, note=note,
+    )
+
+
+@mcp.tool()
+async def get_earnings_calendar(symbol: str,
+                                 lookback_days: int = 30,
+                                 forward_days: int = 60) -> EarningsCalendarResponse:
+    """Board-meeting calendar for symbol, [-lookback_days, +forward_days].
+    next_meeting field is the earliest upcoming meeting (>= today). Populated
+    by fetch_announcement_body parsing of board-meeting notices."""
+    return _get_earnings_calendar_impl(_cache, symbol, lookback_days, forward_days)
 
 
 # ---- cache diagnostics + bulk refresh ----
