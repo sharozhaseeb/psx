@@ -88,6 +88,29 @@ CREATE TABLE IF NOT EXISTS dividends (
 );
 CREATE INDEX IF NOT EXISTS idx_div_symbol_exdate
   ON dividends(symbol, ex_date DESC);
+CREATE TABLE IF NOT EXISTS insider_trades (
+  announcement_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  insider_name TEXT,
+  insider_role TEXT,
+  action TEXT,
+  qty INTEGER,
+  pct_holding REAL,
+  trade_date TEXT,
+  posted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ins_symbol_date
+  ON insider_trades(symbol, posted_at DESC);
+
+CREATE TABLE IF NOT EXISTS board_meetings (
+  announcement_id TEXT PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  meeting_date TEXT,
+  agenda TEXT,
+  posted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bm_symbol_date
+  ON board_meetings(symbol, meeting_date);
 """
 
 
@@ -624,6 +647,76 @@ class Cache:
                ORDER BY COALESCE(ex_date, announcement_date) DESC""",
             (symbol.upper(),),
         ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- insider trades ----
+    def upsert_insider_trade(self, *, announcement_id: str, symbol: str,
+                              insider_name: Optional[str], insider_role: Optional[str],
+                              action: Optional[str], qty: Optional[int],
+                              pct_holding: Optional[float],
+                              trade_date, posted_at) -> None:
+        self.conn.execute(
+            """INSERT INTO insider_trades
+               (announcement_id, symbol, insider_name, insider_role,
+                action, qty, pct_holding, trade_date, posted_at)
+               VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(announcement_id) DO UPDATE SET
+                 insider_name=excluded.insider_name,
+                 insider_role=excluded.insider_role,
+                 action=excluded.action,
+                 qty=excluded.qty,
+                 pct_holding=excluded.pct_holding,
+                 trade_date=excluded.trade_date""",
+            (announcement_id, symbol.upper(), insider_name, insider_role,
+             action, qty, pct_holding, _iso(trade_date), _iso(posted_at)),
+        )
+        self.conn.commit()
+
+    def get_insider_trades(self, symbol: str,
+                            since_days: int = 365) -> list[dict]:
+        since_iso = (datetime.now() - timedelta(days=since_days)).isoformat()
+        rows = self.conn.execute(
+            """SELECT * FROM insider_trades
+               WHERE symbol=? AND posted_at >= ?
+               ORDER BY posted_at DESC""",
+            (symbol.upper(), since_iso),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- board meetings ----
+    def upsert_board_meeting(self, *, announcement_id: str, symbol: str,
+                              meeting_date, agenda: Optional[str],
+                              posted_at) -> None:
+        self.conn.execute(
+            """INSERT INTO board_meetings
+               (announcement_id, symbol, meeting_date, agenda, posted_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(announcement_id) DO UPDATE SET
+                 meeting_date=excluded.meeting_date,
+                 agenda=excluded.agenda""",
+            (announcement_id, symbol.upper(), _iso(meeting_date), agenda,
+             _iso(posted_at)),
+        )
+        self.conn.commit()
+
+    def get_board_meetings(self, symbol: str,
+                            since=None, until=None) -> list[dict]:
+        """Return board meetings whose meeting_date is in [since, until].
+        Both dates inclusive. None on either bound = unbounded."""
+        where = ["symbol = ?"]
+        params: list = [symbol.upper()]
+        if since is not None:
+            where.append("meeting_date >= ?")
+            params.append(_iso(since))
+        if until is not None:
+            where.append("meeting_date <= ?")
+            params.append(_iso(until))
+        sql = (
+            "SELECT * FROM board_meetings "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY meeting_date ASC"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     # ---- diagnostics ----

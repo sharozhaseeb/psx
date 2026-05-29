@@ -331,3 +331,37 @@ def test_get_announcements_missing_body_filters_by_symbol_and_days(tmp_path):
     ids2 = [r["id"] for r in rows2]
     assert "A2" in ids2
     assert "A1" not in ids2
+
+
+def test_insider_trades_table_and_round_trip(tmp_path):
+    from psx_mcp.cache import Cache
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_insider_trade(
+        announcement_id="A1", symbol="SYS",
+        insider_name="Asif Peer", insider_role="Director",
+        action="buy", qty=10_000, pct_holding=None,
+        trade_date=date(2026, 4, 15), posted_at=date(2026, 4, 16),
+    )
+    rows = cache.get_insider_trades("SYS")
+    assert len(rows) == 1
+    assert rows[0]["insider_name"] == "Asif Peer"
+    assert rows[0]["action"] == "buy"
+    assert rows[0]["qty"] == 10_000
+
+
+def test_board_meetings_table_and_round_trip(tmp_path):
+    from psx_mcp.cache import Cache
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_board_meeting(
+        announcement_id="A1", symbol="SYS",
+        meeting_date=date(2026, 6, 15),
+        agenda="financial_results",
+        posted_at=date(2026, 5, 28),
+    )
+    rows = cache.get_board_meetings("SYS",
+                                     since=date(2026, 6, 1),
+                                     until=date(2026, 6, 30))
+    assert len(rows) == 1
+    assert rows[0]["agenda"] == "financial_results"
