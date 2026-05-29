@@ -60,6 +60,13 @@ from psx_mcp.models import (
     ReturnStatsResponse, DistributionStatsResponse,
     DrawdownDetailsResponse, UpDownCaptureResponse,
 )
+from psx_mcp.cross_section import (
+    z_score, percentile_rank, sector_dispersion, sector_relative_strength,
+)
+from psx_mcp.models import (
+    CrossSectionalRankResponse, SectorDispersionResponse,
+    SectorRelativeStrengthResponse,
+)
 from psx_mcp.quality import (
     compute_quality_score as _compute_quality_score_pure,
     compute_4quadrant_score as _compute_4quadrant_score_pure,
@@ -798,6 +805,131 @@ async def rank_universe(by: str = "composite",
     'pe' (cheapest first). Limits to top-200 candidates by quote freshness;
     call refresh_history(symbol) for each candidate before this for full coverage."""
     return _rank_universe_impl(_cache, by, sector, limit)
+
+
+# ============================================================================
+# Phase 5.2 — Cross-sectional / sector dispersion / sector relative strength
+# ============================================================================
+
+def _compute_cross_sectional_rank_impl(
+    cache: Cache, symbol: str, metric: str = "pe",
+    universe: str = "sector",
+) -> CrossSectionalRankResponse:
+    """Rank a symbol's metric within its sector (or the market) using z-score
+    and percentile. universe: 'sector' | 'market'."""
+    sym_u = symbol.strip().upper()
+    sym_row = cache.get_symbol(sym_u)
+    if not sym_row:
+        return CrossSectionalRankResponse(
+            symbol=sym_u, metric=metric, universe=universe, sector=None,
+            value=None, z_score=None, percentile_pct=None, n_in_universe=0,
+            note=f"Symbol {sym_u!r} not found in cache. "
+                 f"Call refresh_market first.",
+        )
+    sector = sym_row.get("sector")
+    if universe == "sector":
+        if not sector:
+            return CrossSectionalRankResponse(
+                symbol=sym_u, metric=metric, universe=universe, sector=None,
+                value=None, z_score=None, percentile_pct=None, n_in_universe=0,
+                note=f"Symbol {sym_u!r} has no sector recorded.",
+            )
+        rows = screen(cache, FilterSpec(sector=sector, limit=500))
+    elif universe == "market":
+        rows = screen(cache, FilterSpec(limit=2000))
+    else:
+        return CrossSectionalRankResponse(
+            symbol=sym_u, metric=metric, universe=universe, sector=sector,
+            value=None, z_score=None, percentile_pct=None, n_in_universe=0,
+            note=f"Unknown universe {universe!r}; expected 'sector' or 'market'.",
+        )
+    values = [r.get(metric) for r in rows if r.get(metric) is not None]
+    target_row = next((r for r in rows if r["symbol"] == sym_u), None)
+    value = target_row.get(metric) if target_row else None
+    if value is None:
+        return CrossSectionalRankResponse(
+            symbol=sym_u, metric=metric, universe=universe, sector=sector,
+            value=None, z_score=None, percentile_pct=None,
+            n_in_universe=len(values),
+            note=(f"Metric {metric!r} not available for {sym_u!r}. "
+                  f"Valid metrics: pe, eps, change_pct, pb, roe, div_yield, "
+                  f"rsi14, price, volume."),
+        )
+    z = z_score(value, values)
+    pct = percentile_rank(value, values)
+    return CrossSectionalRankResponse(
+        symbol=sym_u, metric=metric, universe=universe, sector=sector,
+        value=float(value), z_score=z, percentile_pct=pct,
+        n_in_universe=len(values), note=None,
+    )
+
+
+@mcp.tool()
+async def compute_cross_sectional_rank(
+    symbol: str, metric: str = "pe", universe: str = "sector",
+) -> CrossSectionalRankResponse:
+    """Z-score + percentile of `symbol`'s `metric` vs its `universe`.
+    universe in {'sector','market'}. Use to spot relative cheap/expensive,
+    over/underperformance vs peers. Valid metrics include
+    pe, eps, change_pct, pb, roe, div_yield, rsi14, price, volume.
+    Call refresh_market + refresh_history first for accurate ranks."""
+    return _compute_cross_sectional_rank_impl(_cache, symbol, metric, universe)
+
+
+def _get_sector_dispersion_impl(
+    cache: Cache, sector: str, metric: str = "pe",
+) -> SectorDispersionResponse:
+    """Cross-member dispersion of `metric` within `sector`."""
+    data = sector_dispersion(cache, sector, metric=metric)
+    note = None
+    if data.get("n", 0) == 0:
+        note = (f"No members found for sector {sector!r} with metric {metric!r}. "
+                f"Check sector name and call refresh_market.")
+    return SectorDispersionResponse(
+        sector=data["sector"], metric=data["metric"], n=data["n"],
+        mean=data["mean"], median=data["median"], stdev=data["stdev"],
+        min=data["min"], max=data["max"], range_pct=data["range_pct"],
+        top_z_scores=data["top_z_scores"], note=note,
+    )
+
+
+@mcp.tool()
+async def get_sector_dispersion(
+    sector: str, metric: str = "pe",
+) -> SectorDispersionResponse:
+    """Dispersion stats for `metric` across members of `sector`.
+    metric in {pe, eps, change_pct, pb, roe, div_yield, rsi14, price, volume}.
+    High dispersion = stock-picking opportunity; low dispersion = passive
+    likely better. Also returns the 5 highest |z-score| members."""
+    return _get_sector_dispersion_impl(_cache, sector, metric)
+
+
+def _rank_sector_relative_strength_impl(
+    cache: Cache, sectors: list[str] | None = None,
+    window_days: int = 60,
+) -> SectorRelativeStrengthResponse:
+    """Per sector, compute (sector avg return) - (KSE100 return) over
+    `window_days`. Sectors default to DEFAULT_SECTORS."""
+    sectors = sectors or DEFAULT_SECTORS
+    rows = sector_relative_strength(cache, sectors, window_days=window_days)
+    note = None
+    if rows and all(r.get("rs_pct") is None for r in rows):
+        note = ("All sectors lack sufficient KSE100 / member history. "
+                "Call refresh_market and refresh_history for members first.")
+    return SectorRelativeStrengthResponse(
+        window_days=window_days, rows=rows, note=note,
+    )
+
+
+@mcp.tool()
+async def rank_sector_relative_strength(
+    sectors: list[str] | None = None, window_days: int = 60,
+) -> SectorRelativeStrengthResponse:
+    """Rank sectors by relative strength = sector avg return − KSE100 return
+    over the past `window_days` trading bars. Positive = sector outperforming
+    the index. Sorted descending. Defaults to 13 major PSX sectors when
+    `sectors` is None. Requires KSE100 history and member bars in cache."""
+    return _rank_sector_relative_strength_impl(_cache, sectors, window_days)
 
 
 def _compute_beta_impl(cache: Cache, symbol: str,

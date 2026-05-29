@@ -1202,3 +1202,183 @@ def test_compute_up_down_capture_insufficient_overlap(tmp_path):
     assert out.up_capture_pct is None
     assert out.down_capture_pct is None
     assert out.note is not None and "Need at least 3" in out.note
+
+
+# ============================================================================
+# Phase 5.2 — cross-sectional MCP tools
+# ============================================================================
+
+def _seed_cross_section_cache(tmp_path):
+    """Seed a cache with a TECH sector (3 syms) + CEMENT sector (2 syms) with
+    distinct PE values for cross-sectional ranking."""
+    from psx_mcp.cache import Cache
+    from datetime import datetime
+    cache = Cache(str(tmp_path / "c.db"))
+    ts = datetime(2026, 5, 29, 10, 0)
+    rows = [
+        ("AAA", "TECH",     100.0, +1.0, 11.0),
+        ("BBB", "TECH",     200.0, +2.0, 12.0),
+        ("CCC", "TECH",     300.0, -1.0, 13.0),
+        ("DDD", "CEMENT",   400.0, -2.0, 14.0),
+        ("EEE", "CEMENT",   500.0, +0.5, 15.0),
+    ]
+    for sym, sector, price, change, pe in rows:
+        cache.upsert_symbol(sym, sym, sector, None)
+        cache.upsert_quote(symbol=sym, ts=ts, price=price, change=change,
+                            volume=10_000, day_high=price+1, day_low=price-1,
+                            fetched_at=ts)
+        cache.upsert_fundamentals(symbol=sym, eps=10.0, pe=pe,
+                                   pb=None, div_yield=None, payout=None, roe=None)
+    return cache
+
+
+def test_compute_cross_sectional_rank_pe_in_sector(tmp_path):
+    """Median-PE symbol in TECH sector → z near zero, percentile near 50."""
+    import server as srv
+    from psx_mcp.watchlist import WatchlistStore
+    cache = _seed_cross_section_cache(tmp_path)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_cross_sectional_rank_impl(
+        cache, symbol="BBB", metric="pe", universe="sector",
+    )
+    assert out.symbol == "BBB"
+    assert out.metric == "pe"
+    assert out.universe == "sector"
+    assert out.sector == "TECH"
+    assert out.value == pytest.approx(12.0)
+    assert out.n_in_universe == 3
+    # BBB is the median of {11, 12, 13}
+    assert out.z_score is not None and abs(out.z_score) < 0.01
+    assert out.percentile_pct is not None and 40 <= out.percentile_pct <= 60
+
+
+def test_compute_cross_sectional_rank_unknown_symbol(tmp_path):
+    """Symbol not in cache → note set, value None."""
+    import server as srv
+    from psx_mcp.watchlist import WatchlistStore
+    cache = _seed_cross_section_cache(tmp_path)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_cross_sectional_rank_impl(
+        cache, symbol="ZZZ", metric="pe", universe="sector",
+    )
+    assert out.symbol == "ZZZ"
+    assert out.value is None
+    assert out.note is not None
+
+
+def test_compute_cross_sectional_rank_market_universe(tmp_path):
+    """universe='market' compares vs all symbols across sectors."""
+    import server as srv
+    from psx_mcp.watchlist import WatchlistStore
+    cache = _seed_cross_section_cache(tmp_path)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_cross_sectional_rank_impl(
+        cache, symbol="CCC", metric="pe", universe="market",
+    )
+    assert out.universe == "market"
+    assert out.n_in_universe == 5
+    assert out.value == pytest.approx(13.0)
+
+
+def test_sector_dispersion_tool(tmp_path):
+    """TECH sector dispersion on PE returns stats."""
+    import server as srv
+    from psx_mcp.watchlist import WatchlistStore
+    cache = _seed_cross_section_cache(tmp_path)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_sector_dispersion_impl(cache, "TECH", metric="pe")
+    assert out.sector == "TECH"
+    assert out.metric == "pe"
+    assert out.n == 3
+    assert out.stdev is not None and out.stdev > 0
+    assert out.range_pct is not None
+    assert out.mean == pytest.approx(12.0)
+
+
+def test_sector_dispersion_unknown_sector(tmp_path):
+    """Sector with no members → n=0, note set."""
+    import server as srv
+    from psx_mcp.watchlist import WatchlistStore
+    cache = _seed_cross_section_cache(tmp_path)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_sector_dispersion_impl(cache, "NOSUCH", metric="pe")
+    assert out.n == 0
+    assert out.note is not None
+
+
+def test_rank_sector_relative_strength_returns_rows(tmp_path):
+    """KSE100 down over window; TECH closes up → TECH RS positive."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 29)
+    window = 60
+    # Seed index with declining closes (down 10% over the window).
+    for i in range(window + 5):
+        d = today - timedelta(days=(window + 4) - i)
+        # i=0: oldest; i=last: newest
+        close = 10000.0 * (1.0 - i * (0.10 / (window + 4)))
+        cache.upsert_index_bar(index_code="KSE100", bar_date=d,
+                                close=close, volume=1e8)
+    # Seed TECH symbols with rising bars; CEMENT with flat bars.
+    for sym, sector, slope in [
+        ("AAA", "TECH",    +0.20),
+        ("BBB", "TECH",    +0.20),
+        ("CCC", "CEMENT",  +0.00),
+        ("DDD", "CEMENT",  +0.00),
+    ]:
+        cache.upsert_symbol(sym, sym, sector, None)
+        ts = datetime(2026, 5, 29, 10, 0)
+        cache.upsert_quote(symbol=sym, ts=ts,
+                            price=100.0, change=0.0, volume=10_000,
+                            day_high=101, day_low=99,
+                            fetched_at=ts)
+        cache.upsert_fundamentals(symbol=sym, eps=10.0, pe=10.0,
+                                   pb=None, div_yield=None, payout=None, roe=None)
+        bars = []
+        for i in range(window + 5):
+            d = today - timedelta(days=(window + 4) - i)
+            close = 100.0 * (1.0 + i * (slope / (window + 4)))
+            bars.append(Bar(symbol=sym, date=d, open=close, high=close + 1,
+                             low=close - 1, close=close, volume=1000))
+        cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._rank_sector_relative_strength_impl(
+        cache, sectors=["TECH", "CEMENT"], window_days=window,
+    )
+    assert out.window_days == window
+    assert len(out.rows) == 2
+    # TECH up vs index down → positive RS; CEMENT flat vs index down → also positive
+    # but smaller than TECH. Result is sorted desc by RS.
+    assert out.rows[0]["sector"] == "TECH"
+    assert out.rows[0]["rs_pct"] > out.rows[1]["rs_pct"]
+
+
+def test_rank_sector_relative_strength_uses_defaults(tmp_path):
+    """sectors=None → falls back to DEFAULT_SECTORS, returns rows for each."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    cache = Cache(str(tmp_path / "c.db"))
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._rank_sector_relative_strength_impl(cache, sectors=None,
+                                                    window_days=60)
+    # Empty index history → each row has a note flagging insufficient history.
+    assert len(out.rows) == len(srv.DEFAULT_SECTORS)

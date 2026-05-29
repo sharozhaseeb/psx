@@ -487,6 +487,38 @@ class BacktestResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class CrossSectionalRankResponse(Disclaimer):
+    symbol: str
+    metric: str
+    universe: str
+    sector: Optional[str] = None
+    value: Optional[float] = None
+    z_score: Optional[float] = None
+    percentile_pct: Optional[float] = None
+    n_in_universe: int
+    note: Optional[str] = None
+
+
+class SectorDispersionResponse(Disclaimer):
+    sector: str
+    metric: str
+    n: int
+    mean: Optional[float] = None
+    median: Optional[float] = None
+    stdev: Optional[float] = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    range_pct: Optional[float] = None
+    top_z_scores: list[dict] = []
+    note: Optional[str] = None
+
+
+class SectorRelativeStrengthResponse(Disclaimer):
+    window_days: int
+    rows: list[dict]
+    note: Optional[str] = None
+
+
 class DividendEvent(BaseModel):
     announcement_id: str
     symbol: str
