@@ -35,6 +35,17 @@ These are gaps observed while doing real research with the current 24 tools. Eac
 | **Fundamental alert triggers** ✅ *Resolved in analytics-v3* | "Tell me if SYS PE crosses 25 or NETSOL ROE drops below 12%" | `set_alert_rule` now accepts `type="fundamental"` for PE / ROE / div_yield thresholds |
 | **Backtest smoke test** ✅ *Resolved in analytics-v3* (caveated) | Sanity-check a screener filter vs holding the index | `backtest_simple(filter_spec, hold_days=63, since="2025-01-01")` — single entry, no costs, no rebalancing; caveats in response |
 | **One-shot dashboard** ✅ *Resolved in analytics-v3* | Compose all the above into a single research view | `get_full_analysis(symbol)` — quote + fundamentals + 52w + indicators + drawdown + risk + beta + RS + 4-quadrant + dividends + announcements |
+| **CAGR / rolling returns / win rate** ✅ *Resolved in analytics-v4* | Return characterization beyond a single Sharpe number | `compute_return_stats(symbol, rolling_window_days=20)` |
+| **Sortino / Calmar / Omega / Information ratios** ✅ *Resolved in analytics-v4* | Risk-adjusted ratios beyond Sharpe (downside vol, DD-normalized, distribution-aware) | Primitives in `risk.py`; surfaced via `get_extended_risk_metrics` and screener filters |
+| **VaR / CVaR / skewness / kurtosis / tail ratio** ✅ *Resolved in analytics-v4* | Tail-risk and distribution shape — Sharpe alone hides fat tails | `compute_distribution_stats(symbol)` |
+| **Drawdown duration / Ulcer Index / top-3 DDs** ✅ *Resolved in analytics-v4* | Pain duration matters, not just depth; Ulcer Index for sustained drawdown | `compute_drawdown_details(symbol)` — peak/trough/recovery indices, durations, Ulcer Index, top-3 |
+| **Up/down capture** ✅ *Resolved in analytics-v4* | Aggressive vs defensive profile vs benchmark | `compute_up_down_capture(symbol, index_code="KSE100")` |
+| **Cross-sectional z-score / percentile within universe** ✅ *Resolved in analytics-v4* | "Where does this symbol's PE sit within its sector / the universe?" | `compute_cross_sectional_rank(symbol, metric="pe", scope="sector")` |
+| **Sector dispersion** ✅ *Resolved in analytics-v4* | Tight vs wide sectors; outlier detection | `get_sector_dispersion(sector, metric="pe")` |
+| **Sector relative strength** ✅ *Resolved in analytics-v4* | Rank sectors by RS vs KSE-100 over a configurable window | `rank_sector_relative_strength(sectors=None, window_days=60)` |
+| **ADX / Stochastic / OBV / Williams %R** ✅ *Resolved in analytics-v4* | Trend-strength + oscillators + volume-momentum primitives | `compute_indicators` now accepts `adx14`, `stochastic`, `obv`, `williams_r14` |
+| **Risk-adjusted screener filters** ✅ *Resolved in analytics-v4* | Screen on Sortino / Calmar / max-DD alongside fundamentals | `screen_symbols` gains `sortino_min`, `calmar_min`, `max_dd_max_pct` |
+| **Unified extended dashboard** ✅ *Resolved in analytics-v4* | One-call view of return + distribution + DD + capture + cross-sectional rank | `get_extended_risk_metrics(symbol)` — **recommended Part-4 entry point** |
 | **Free float % / shares outstanding history** | Detect dilution, bonus issues | `free_float` partially populated, no history |
 | **Corporate actions calendar** | Bonus shares, splits, rights, dividend ex-dates | No tool; SYS FY24 EPS looks "crashed" without action history |
 | **Insider / director transactions** | Strongest short-term signal in EM markets | No tool |
@@ -372,6 +383,8 @@ Three RSS feeds (BR, Dawn, Tribune) + a per-symbol headline filter. Avoid sentim
 **Status (2026-05-24):** `analytics-v2` ships dividend history, index EOD series, beta, and composite scoring. Part 3 will populate ROE / P/B / payout-ratio via a headless-browser Ratios sub-tab fetch and add the full Piotroski F-Score on top of the resulting balance-sheet coverage.
 
 **analytics-v3** completes the analytical-tool surface (risk, ranking, sizing, dashboard, backtest). **Part 4** will populate ROE/PB/payout via a headless-browser sub-tab fetcher, unlock the full 9-signal Piotroski F-Score, and add macro context (USD/PKR, policy rate).
+
+**analytics-v4** completes the metric-coverage layer (return characterization, risk-adjusted ratios beyond Sharpe, tail/distribution stats, drawdown deep-dive, cross-sectional/sector analytics, four more indicators). **Part 5** focus: headless-browser sub-tab fetcher to populate ROE/PB/payout (unblocks full F-Score), `sector_history` table to track sector P/E percentile vs own history over time, and Treynor ratio (depends on rolling beta from accumulated index history).
 
 ---
 

@@ -57,7 +57,7 @@ Live smoke test (gated, hits real PSX):
 | `list_watchlist` / `add_to_watchlist` / `remove_from_watchlist` | watchlist mgmt |
 | `set_alert_rule` / `list_alert_rules` / `remove_alert_rule` | rule mgmt — supports `type` in `{"price", "indicator", "volume", "fundamental"}`. New `"fundamental"` type triggers on PE / ROE / dividend-yield thresholds against cached fundamentals. |
 | `check_alerts` | on-demand alert scan |
-| `compute_indicators` | RSI/MACD/SMA/EMA/Bollinger/vol-z/ATR/Donchian/returns_window. Omit `indicators` for default bundle: `sma20`, `sma50`, `sma200`, `rsi14`, `atr14`. |
+| `compute_indicators` | RSI/MACD/SMA/EMA/Bollinger/vol-z/ATR/Donchian/returns_window. **analytics-v4 adds:** `adx14` (trend strength), `stochastic` (%K/%D), `obv` (on-balance volume), `williams_r14` (oscillator). Omit `indicators` for default bundle: `sma20`, `sma50`, `sma200`, `rsi14`, `atr14`. |
 | `compute_beta(symbol, index_code="KSE100", window=252)` | OLS beta of symbol vs index over date-aligned EOD returns |
 | `compute_quality_score(symbol)` | composite quality score in [0, 1] — **2-signal (ROE + EPS trend), not the full 9-point Piotroski**. F-score deferred to Part 4 when balance-sheet items land. |
 | `compute_4quadrant_score(symbol)` | Value / Quality / Momentum / Trend composite in [0, 4] (sub-scores + total). Response includes `warnings: list[str]` for silent-failure cases (e.g. missing fundamentals, insufficient history). |
@@ -76,8 +76,17 @@ Live smoke test (gated, hits real PSX):
 | `backtest_simple(filter_spec, hold_days=63, since="2025-01-01")` | smoke-test backtest — applies a screener filter, holds matched names for `hold_days`, returns avg/median return vs KSE-100 (no transaction costs, no rebalancing, single entry — caveats documented in response) |
 | `scan_volume_spikes` | volume-spike scanner |
 | `compare_symbols` | side-by-side metric table; includes `change_pct` and `volume` from latest quote |
-| `screen_symbols` | multi-criteria screener — filter by sector(s), PE, EPS, price, RSI, SMA stack, volume, turnover, **`roe_min`**, **`pb_max`**, **`div_yield_min`**; sort + limit. Response includes `warnings: list[str]` for silent-failure cases (e.g. fundamentals filter requested but underlying column null). E.g. `screen_symbols(sector="TECHNOLOGY & COMMUNICATION", pe_max=15, roe_min=0.15, pb_max=3.0, above_sma200=True, sort_by="change_pct", desc=True, limit=20)` |
+| `screen_symbols` | multi-criteria screener — filter by sector(s), PE, EPS, price, RSI, SMA stack, volume, turnover, **`roe_min`**, **`pb_max`**, **`div_yield_min`**; **analytics-v4 adds risk-adjusted filters: `sortino_min`, `calmar_min`, `max_dd_max_pct`**; sort + limit. Response includes `warnings: list[str]` for silent-failure cases (e.g. fundamentals filter requested but underlying column null). E.g. `screen_symbols(sector="TECHNOLOGY & COMMUNICATION", pe_max=15, roe_min=0.15, pb_max=3.0, above_sma200=True, sortino_min=1.0, max_dd_max_pct=30, sort_by="change_pct", desc=True, limit=20)` |
 | `get_sector_summary` | sector-level aggregates: member count, breadth (% up / % above SMA200), median PE, top & bottom 5 by `change_pct` |
+| **analytics-v4 — extended metric tools** | |
+| `compute_return_stats(symbol, rolling_window_days=20)` | CAGR + win rate + rolling-N-day-return best/worst/median over cached daily closes |
+| `compute_distribution_stats(symbol)` | return-distribution stats: skewness, excess kurtosis, 5% VaR, 5% CVaR, tail ratio |
+| `compute_drawdown_details(symbol)` | drawdown deep-dive — max DD, peak/trough/recovery indices, durations, Ulcer Index, top-3 drawdowns |
+| `compute_up_down_capture(symbol, index_code="KSE100")` | up/down capture ratios vs index (aggressive vs defensive profile) |
+| `compute_cross_sectional_rank(symbol, metric="pe", scope="sector")` | z-score + percentile rank for `metric` within peer universe (`scope="sector"` or `"universe"`) |
+| `get_sector_dispersion(sector, metric="pe")` | sector-wide dispersion (std / IQR) and outliers for `metric` |
+| `rank_sector_relative_strength(sectors=None, window_days=60)` | sector RS vs KSE-100 over `window_days`, ranked across major PSX sectors |
+| **`get_extended_risk_metrics(symbol)` — recommended one-shot dashboard** | composes return stats + distribution stats + drawdown deep-dive + up/down capture + cross-sectional rank into a single response. Preferred entry point for Part-4 analytics. |
 
 ## Usage tips
 
