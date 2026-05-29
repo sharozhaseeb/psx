@@ -47,6 +47,8 @@ from psx_mcp.risk import (
     volatility_annualized, sharpe,
     relative_strength, correlation_matrix,
 )
+from psx_mcp.risk_extended import cagr, rolling_returns, win_rate
+from psx_mcp.models import ReturnStatsResponse
 from psx_mcp.quality import (
     compute_quality_score as _compute_quality_score_pure,
     compute_4quadrant_score as _compute_4quadrant_score_pure,
@@ -866,6 +868,35 @@ def _compute_risk_metrics_impl(cache: Cache, symbol: str,
     )
 
 
+def _compute_return_stats_impl(cache: Cache, symbol: str,
+                                rolling_window_days: int = 20) -> ReturnStatsResponse:
+    closes = pd.Series(cache.closes_for(symbol))
+    if len(closes) < 2:
+        return ReturnStatsResponse(
+            symbol=symbol.upper(),
+            rolling_return_window_days=rolling_window_days,
+            n_bars=int(len(closes)),
+            note=f"Need >= 2 bars; have {len(closes)}. "
+                 f"Call refresh_history({symbol!r}).",
+        )
+    cagr_val = cagr(closes)
+    wr = win_rate(closes)
+    rolls = rolling_returns(closes, window=rolling_window_days)
+    rolls_sorted = sorted(rolls) if rolls else []
+    return ReturnStatsResponse(
+        symbol=symbol.upper(),
+        cagr_pct=(cagr_val * 100.0) if cagr_val is not None else None,
+        win_rate_pct=wr,
+        rolling_return_window_days=rolling_window_days,
+        rolling_returns_best_pct=(rolls_sorted[-1] * 100.0) if rolls_sorted else None,
+        rolling_returns_worst_pct=(rolls_sorted[0] * 100.0) if rolls_sorted else None,
+        rolling_returns_median_pct=(rolls_sorted[len(rolls_sorted) // 2] * 100.0)
+                                    if rolls_sorted else None,
+        n_bars=int(len(closes)),
+        note=None,
+    )
+
+
 def _compute_relative_strength_impl(cache: Cache, symbol: str,
                                      index_code: str = "KSE100",
                                      window: int = 252) -> RelativeStrengthResponse:
@@ -924,6 +955,15 @@ async def compute_risk_metrics(symbol: str, rf_annual: float = 0.0) -> RiskMetri
     rf_annual is the annual risk-free rate as a decimal (e.g., 0.22 for 22%
     Pakistan T-bill yield). Default 0.0 = excess return == raw return."""
     return _compute_risk_metrics_impl(_cache, symbol, rf_annual)
+
+
+@mcp.tool()
+async def compute_return_stats(symbol: str,
+                                rolling_window_days: int = 20) -> ReturnStatsResponse:
+    """Return-characterization stats: CAGR, win rate, rolling-N-day-return
+    best/worst/median. CAGR is annualized compound return over the full cached
+    series. Rolling window defaults to 20 trading days (~1 calendar month)."""
+    return _compute_return_stats_impl(_cache, symbol, rolling_window_days)
 
 
 @mcp.tool()

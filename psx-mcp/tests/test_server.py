@@ -635,6 +635,28 @@ def test_compute_risk_metrics_seeded(tmp_path):
     assert out.max_drawdown_pct <= 0
 
 
+def test_compute_return_stats_uptrend_cagr_positive(tmp_path):
+    """260 strictly uptrending bars → positive CAGR + 100% win rate."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 29)
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=259 - i),
+                open=100.0+i, high=100.0+i, low=100.0+i,
+                close=100.0+i, volume=1000) for i in range(260)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_return_stats_impl(cache, "XYZ", rolling_window_days=20)
+    assert out.cagr_pct is not None and out.cagr_pct > 0
+    assert out.win_rate_pct == pytest.approx(100.0)
+    assert out.n_bars == 260
+    assert out.rolling_returns_best_pct is not None
+
+
 def test_compute_relative_strength_uses_index_history(tmp_path):
     import server as srv
     from psx_mcp.cache import Cache

@@ -354,6 +354,18 @@ class RiskMetricsResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class ReturnStatsResponse(Disclaimer):
+    symbol: str
+    cagr_pct: Optional[float] = None
+    win_rate_pct: Optional[float] = None
+    rolling_return_window_days: int
+    rolling_returns_best_pct: Optional[float] = None
+    rolling_returns_worst_pct: Optional[float] = None
+    rolling_returns_median_pct: Optional[float] = None
+    n_bars: int
+    note: Optional[str] = None
+
+
 class RelativeStrengthResponse(Disclaimer):
     symbol: str
     index_code: str
