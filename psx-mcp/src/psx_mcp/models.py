@@ -366,6 +366,17 @@ class ReturnStatsResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class DistributionStatsResponse(Disclaimer):
+    symbol: str
+    skewness: Optional[float] = None
+    excess_kurtosis: Optional[float] = None
+    var_5pct_pct: Optional[float] = None
+    cvar_5pct_pct: Optional[float] = None
+    tail_ratio_5pct: Optional[float] = None
+    n_bars: int
+    note: Optional[str] = None
+
+
 class RelativeStrengthResponse(Disclaimer):
     symbol: str
     index_code: str

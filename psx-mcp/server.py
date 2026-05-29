@@ -47,8 +47,15 @@ from psx_mcp.risk import (
     volatility_annualized, sharpe,
     relative_strength, correlation_matrix,
 )
-from psx_mcp.risk_extended import cagr, rolling_returns, win_rate
-from psx_mcp.models import ReturnStatsResponse
+from psx_mcp.risk_extended import (
+    cagr, rolling_returns, win_rate,
+    sortino, calmar, information_ratio, omega_ratio,
+    var_historical, cvar_historical, skewness, kurtosis_excess, tail_ratio,
+    drawdown_details, ulcer_index, up_down_capture,
+)
+from psx_mcp.models import (
+    ReturnStatsResponse, DistributionStatsResponse,
+)
 from psx_mcp.quality import (
     compute_quality_score as _compute_quality_score_pure,
     compute_4quadrant_score as _compute_4quadrant_score_pure,
@@ -897,6 +904,32 @@ def _compute_return_stats_impl(cache: Cache, symbol: str,
     )
 
 
+def _compute_distribution_stats_impl(cache: Cache, symbol: str) -> DistributionStatsResponse:
+    closes = pd.Series(cache.closes_for(symbol))
+    if len(closes) < 3:
+        return DistributionStatsResponse(
+            symbol=symbol.upper(),
+            n_bars=int(len(closes)),
+            note=f"Need >= 3 bars; have {len(closes)}. "
+                 f"Call refresh_history({symbol!r}).",
+        )
+    sk = skewness(closes)
+    ek = kurtosis_excess(closes)
+    var5 = var_historical(closes, confidence=0.05)
+    cvar5 = cvar_historical(closes, confidence=0.05)
+    tr5 = tail_ratio(closes, quantile=0.05)
+    return DistributionStatsResponse(
+        symbol=symbol.upper(),
+        skewness=sk,
+        excess_kurtosis=ek,
+        var_5pct_pct=(var5 * 100.0) if var5 is not None else None,
+        cvar_5pct_pct=(cvar5 * 100.0) if cvar5 is not None else None,
+        tail_ratio_5pct=tr5,
+        n_bars=int(len(closes)),
+        note=None,
+    )
+
+
 def _compute_relative_strength_impl(cache: Cache, symbol: str,
                                      index_code: str = "KSE100",
                                      window: int = 252) -> RelativeStrengthResponse:
@@ -964,6 +997,17 @@ async def compute_return_stats(symbol: str,
     best/worst/median. CAGR is annualized compound return over the full cached
     series. Rolling window defaults to 20 trading days (~1 calendar month)."""
     return _compute_return_stats_impl(_cache, symbol, rolling_window_days)
+
+
+@mcp.tool()
+async def compute_distribution_stats(symbol: str) -> DistributionStatsResponse:
+    """Return-distribution shape: skewness, excess kurtosis, historical 5%
+    VaR/CVaR (in percent), and 5% tail ratio. Heuristics for tail risk:
+    excess_kurtosis > 0 = fatter tails than normal; var_5pct_pct = the daily
+    return such that 5% of historical days were worse; cvar_5pct_pct = the
+    mean of those tail days (always <= VaR). tail_ratio_5pct > 1 = right
+    tail dominates (favorable)."""
+    return _compute_distribution_stats_impl(_cache, symbol)
 
 
 @mcp.tool()

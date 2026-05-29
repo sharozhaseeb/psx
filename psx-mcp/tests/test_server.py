@@ -657,6 +657,36 @@ def test_compute_return_stats_uptrend_cagr_positive(tmp_path):
     assert out.rolling_returns_best_pct is not None
 
 
+def test_compute_distribution_stats_seeded(tmp_path):
+    """300 seeded random bars → var/cvar non-None and cvar <= var."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    import numpy as np
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 29)
+    rng = np.random.default_rng(42)
+    pcts = rng.normal(loc=0.0008, scale=0.012, size=300)
+    closes = list(np.exp(np.cumsum(pcts)) * 100.0)
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=299 - i),
+                open=c, high=c, low=c, close=c, volume=1000)
+            for i, c in enumerate(closes)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_distribution_stats_impl(cache, "XYZ")
+    assert out.n_bars == 300
+    assert out.var_5pct_pct is not None
+    assert out.cvar_5pct_pct is not None
+    # CVaR (tail mean) should be at least as negative as VaR (tail threshold)
+    assert out.cvar_5pct_pct <= out.var_5pct_pct
+    assert out.skewness is not None
+    assert out.excess_kurtosis is not None
+    assert out.tail_ratio_5pct is not None
+
+
 def test_compute_relative_strength_uses_index_history(tmp_path):
     import server as srv
     from psx_mcp.cache import Cache
