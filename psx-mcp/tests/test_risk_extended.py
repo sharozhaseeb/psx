@@ -15,6 +15,8 @@ from psx_mcp.risk_extended import (
     skewness,
     kurtosis_excess,
     tail_ratio,
+    drawdown_details,
+    ulcer_index,
 )
 
 
@@ -209,3 +211,59 @@ def test_tail_ratio_uptrend_greater_than_one():
 def test_tail_ratio_short_series_returns_none():
     closes = pd.Series([100.0, 101.0])
     assert tail_ratio(closes, quantile=0.05) is None
+
+
+def test_drawdown_details_returns_all_fields():
+    """[100, 120, 80, 100, 110, 120, 130] — single DD event recovered.
+    Peak at index 1 (120), trough at index 2 (80), recovery at index 5 (120).
+    Drawdown duration = trough - peak = 1 bar. Recovery duration = recovery - trough = 3 bars.
+    Max DD = (80 - 120) / 120 = -33.33%."""
+    closes = pd.Series([100.0, 120.0, 80.0, 100.0, 110.0, 120.0, 130.0])
+    result = drawdown_details(closes)
+    assert result is not None
+    assert result["peak_index"] == 1
+    assert result["trough_index"] == 2
+    assert result["recovery_index"] == 5
+    assert result["drawdown_duration_bars"] == 1
+    assert result["recovery_duration_bars"] == 3
+    assert result["max_drawdown_pct"] == pytest.approx(-33.333333, abs=0.01)
+
+
+def test_drawdown_details_no_recovery_yet():
+    """[100, 90, 85, 80] — DD ongoing; no recovery → recovery_index is None."""
+    closes = pd.Series([100.0, 90.0, 85.0, 80.0])
+    result = drawdown_details(closes)
+    assert result is not None
+    assert result["recovery_index"] is None
+
+
+def test_drawdown_details_top_drawdowns_sorted():
+    """Two distinct DD events. The deeper one should appear first
+    (depth_pct ascending = most negative first)."""
+    # First DD: 100 → 70 (-30%) → 100 (recover)
+    # Second DD: 100 → 90 (-10%) → 100 (recover)
+    closes = pd.Series([
+        100.0, 70.0, 100.0,   # event 1: -30% then recover
+        90.0, 100.0,          # event 2: -10% then recover
+    ])
+    result = drawdown_details(closes)
+    assert result is not None
+    tops = result["top_drawdowns"]
+    assert len(tops) >= 2
+    # Sorted by depth ascending → most negative first
+    assert tops[0]["depth_pct"] < tops[1]["depth_pct"]
+
+
+def test_ulcer_index_constant_series_is_zero():
+    closes = pd.Series([100.0] * 50)
+    result = ulcer_index(closes)
+    assert result is not None
+    assert result == pytest.approx(0.0, abs=1e-9)
+
+
+def test_ulcer_index_drawdown_series_is_positive():
+    """Series with a clear dip → ulcer index > 0."""
+    closes = pd.Series([100.0, 90.0, 80.0, 85.0, 95.0, 100.0])
+    result = ulcer_index(closes)
+    assert result is not None
+    assert result > 0.0

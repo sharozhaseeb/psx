@@ -272,6 +272,131 @@ def kurtosis_excess(closes: pd.Series) -> Optional[float]:
     return float(((arr - mean) ** 4).mean() / (std ** 4) - 3.0)
 
 
+def drawdown_details(closes: pd.Series) -> Optional[dict]:
+    """Detailed drawdown analysis via single-pass state machine.
+
+    Walks the series once, tracking running max. Each time price re-achieves
+    the running max (recovery), an event is emitted with peak/trough/recovery
+    indices and depth. If the series ends still in drawdown, a trailing
+    unrecovered event is appended (recovery_index=None).
+
+    Returns a dict with:
+      - max_drawdown_pct: most-negative depth observed (percent, e.g. -33.33)
+      - peak_index: index of peak preceding the max-DD trough
+      - trough_index: index of the deepest trough
+      - recovery_index: index at which price re-achieved the pre-DD peak (or None)
+      - drawdown_duration_bars: trough_index - peak_index
+      - recovery_duration_bars: recovery_index - trough_index (or None)
+      - top_drawdowns: list of up to 3 events sorted by depth ascending
+        (most-negative first); each event is
+        {peak_index, trough_index, depth_pct, recovery_index}
+        where depth_pct is in percent units (e.g. -33.33).
+
+    Returns None if closes is empty or has < 2 entries.
+    """
+    if closes is None or len(closes) < 2:
+        return None
+
+    events: list[dict] = []
+    running_max = float(closes.iloc[0])
+    peak_idx = 0
+    trough_idx = 0
+    trough_val = running_max
+    in_dd = False
+
+    for i in range(1, len(closes)):
+        v = float(closes.iloc[i])
+        if v >= running_max:
+            # New high (or matched) — if we were in a DD, close the event as recovered
+            if in_dd:
+                depth_pct = ((trough_val - running_max) / running_max * 100.0) if running_max > 0 else 0.0
+                events.append({
+                    "peak_index": int(peak_idx),
+                    "trough_index": int(trough_idx),
+                    "depth_pct": float(depth_pct),
+                    "recovery_index": int(i),
+                })
+                in_dd = False
+            running_max = v
+            peak_idx = i
+            trough_idx = i
+            trough_val = v
+        else:
+            # Below running max — we're in a drawdown
+            if not in_dd:
+                in_dd = True
+                trough_idx = i
+                trough_val = v
+            elif v < trough_val:
+                trough_idx = i
+                trough_val = v
+
+    # Trailing unrecovered event
+    if in_dd:
+        depth_pct = ((trough_val - running_max) / running_max * 100.0) if running_max > 0 else 0.0
+        events.append({
+            "peak_index": int(peak_idx),
+            "trough_index": int(trough_idx),
+            "depth_pct": float(depth_pct),
+            "recovery_index": None,
+        })
+
+    if not events:
+        # No drawdown ever occurred (strictly non-decreasing)
+        return {
+            "max_drawdown_pct": 0.0,
+            "peak_index": None,
+            "trough_index": None,
+            "recovery_index": None,
+            "drawdown_duration_bars": None,
+            "recovery_duration_bars": None,
+            "top_drawdowns": [],
+        }
+
+    # Sort events by depth ascending (most negative first)
+    sorted_events = sorted(events, key=lambda e: e["depth_pct"])
+    top = sorted_events[:3]
+    worst = sorted_events[0]
+    peak_i = worst["peak_index"]
+    trough_i = worst["trough_index"]
+    recov_i = worst["recovery_index"]
+    dd_dur = trough_i - peak_i
+    recov_dur = (recov_i - trough_i) if recov_i is not None else None
+
+    return {
+        "max_drawdown_pct": float(worst["depth_pct"]),
+        "peak_index": int(peak_i),
+        "trough_index": int(trough_i),
+        "recovery_index": int(recov_i) if recov_i is not None else None,
+        "drawdown_duration_bars": int(dd_dur),
+        "recovery_duration_bars": int(recov_dur) if recov_dur is not None else None,
+        "top_drawdowns": top,
+    }
+
+
+def ulcer_index(closes: pd.Series) -> Optional[float]:
+    """Ulcer Index — RMS of percentage drawdowns from running max.
+
+        UI = sqrt( mean( ((close / running_max) - 1) ** 2 ) ) * 100
+
+    Reported in percent units. Zero for a strictly non-decreasing series.
+
+    Returns None if closes is empty or has < 2 entries.
+    """
+    if closes is None or len(closes) < 2:
+        return None
+    running_max = closes.cummax()
+    # Guard against zero / negative running max (shouldn't happen for prices)
+    if (running_max <= 0).any():
+        return None
+    dd_pct = (closes / running_max) - 1.0  # ≤ 0
+    squared = (dd_pct.astype(float) * 100.0) ** 2
+    mean_sq = float(squared.mean())
+    if not math.isfinite(mean_sq) or mean_sq < 0.0:
+        return None
+    return float(math.sqrt(mean_sq))
+
+
 def tail_ratio(closes: pd.Series, quantile: float = 0.05) -> Optional[float]:
     """Tail ratio = |upper-tail quantile| / |lower-tail quantile| of returns.
 
