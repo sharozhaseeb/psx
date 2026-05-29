@@ -617,6 +617,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pydantic" },
+    { name = "pypdf" },
     { name = "structlog" },
 ]
 
@@ -637,6 +638,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26.0" },
     { name = "pandas", specifier = ">=2.2.0" },
     { name = "pydantic", specifier = ">=2.6.0" },
+    { name = "pypdf", specifier = ">=4.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
     { name = "respx", marker = "extra == 'dev'", specifier = ">=0.21.0" },
@@ -781,6 +783,15 @@ wheels = [
 [package.optional-dependencies]
 crypto = [
     { name = "cryptography" },
+]
+
+[[package]]
+name = "pypdf"
+version = "6.12.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0a/6d/20879428577c1e57ecd41b69dc86beabf43db9287ad2e702207f8b48c751/pypdf-6.12.2.tar.gz", hash = "sha256:111669eb6680c04495ae0c113a1476e3bf93a95761d23c7406b591c80a6490b1", size = 6468184 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9e/44/fee070a16639d9869bb6a7e0f3a1b3946da1d66f32b9260b4d19cb90d7b2/pypdf-6.12.2-py3-none-any.whl", hash = "sha256:67b2699357a1f3f4c945940ea80826349ee507c9e2577724a14b4941982c104d", size = 343865 },
 ]
 
 [[package]]
@@ -1096,8 +1107,8 @@ name = "uvicorn"
 version = "0.47.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
-    { name = "h11" },
+    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f6/b1/8e7077a8641086aea449e1b5752a570f1b5906c64e0a33cd6d93b63a066b/uvicorn-0.47.0.tar.gz", hash = "sha256:7c9a0ea1a9414106bbab7324609c162d8fa0cdcdcb703060987269d77c7bb533", size = 90582 }
 wheels = [
