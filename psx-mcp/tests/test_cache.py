@@ -243,6 +243,25 @@ def test_closes_for_with_dates_returns_ordered_pairs(tmp_path):
     assert closes == [100.0, 101.0, 102.0, 103.0, 104.0]
 
 
+def test_news_table_has_body_and_fetch_status_columns(tmp_path):
+    from psx_mcp.cache import Cache
+    cache = Cache(str(tmp_path / "c.db"))
+    cols = [r[1] for r in cache.conn.execute(
+        "PRAGMA table_info(news)"
+    ).fetchall()]
+    assert "body" in cols
+    assert "fetch_status" in cols
+
+
+def test_announcements_table_has_fetch_status_column(tmp_path):
+    from psx_mcp.cache import Cache
+    cache = Cache(str(tmp_path / "c.db"))
+    cols = [r[1] for r in cache.conn.execute(
+        "PRAGMA table_info(announcements)"
+    ).fetchall()]
+    assert "fetch_status" in cols  # body already exists from Part 2
+
+
 def test_cache_status_reports_table_counts_and_freshness(tmp_path):
     from psx_mcp.cache import Cache
     from psx_mcp.models import Bar

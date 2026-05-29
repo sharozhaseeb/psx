@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS bars_daily (
 );
 CREATE TABLE IF NOT EXISTS announcements (
   id TEXT PRIMARY KEY, symbol TEXT, posted_at TEXT,
-  title TEXT, category TEXT, url TEXT, body TEXT
+  title TEXT, category TEXT, url TEXT, body TEXT,
+  fetch_status TEXT
 );
 CREATE TABLE IF NOT EXISTS fundamentals (
   symbol TEXT PRIMARY KEY, eps REAL, pe REAL, pb REAL,
@@ -31,7 +32,8 @@ CREATE TABLE IF NOT EXISTS fundamentals (
 );
 CREATE TABLE IF NOT EXISTS news (
   id TEXT PRIMARY KEY, source TEXT, posted_at TEXT,
-  title TEXT, url TEXT, symbols TEXT
+  title TEXT, url TEXT, symbols TEXT,
+  body TEXT, fetch_status TEXT
 );
 CREATE TABLE IF NOT EXISTS indices (
   index_code TEXT PRIMARY KEY,
@@ -102,6 +104,17 @@ class Cache:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        # Idempotent migrations for pre-existing DBs that don't have these columns.
+        def _add_col_if_missing(table: str, col: str, col_type: str) -> None:
+            cols = [r[1] for r in self.conn.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()]
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+
+        _add_col_if_missing("news", "body", "TEXT")
+        _add_col_if_missing("news", "fetch_status", "TEXT")
+        _add_col_if_missing("announcements", "fetch_status", "TEXT")
         self.conn.commit()
 
     def close(self) -> None:
