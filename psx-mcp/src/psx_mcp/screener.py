@@ -8,6 +8,11 @@ from typing import Optional
 import pandas as pd
 
 from psx_mcp import indicators
+from psx_mcp.risk_extended import (
+    sortino as _sortino,
+    calmar as _calmar,
+    drawdown_details as _dd_details,
+)
 
 
 SORTABLE = {"change_pct", "volume", "pe", "rsi14", "symbol", "price"}
@@ -31,6 +36,9 @@ class FilterSpec:
     roe_min: Optional[float] = None
     pb_max: Optional[float] = None
     div_yield_min: Optional[float] = None
+    sortino_min: Optional[float] = None
+    calmar_min: Optional[float] = None
+    max_dd_max_pct: Optional[float] = None
     sort_by: str = "symbol"
     desc: bool = False
     limit: int = 50
@@ -125,6 +133,28 @@ def _screen(cache, spec: FilterSpec) -> tuple[list[dict], dict]:
             continue
         if spec.sma20_gt_sma50 is False and (sma20 is not None and sma50 is not None and sma20 > sma50):
             continue
+
+        if any(f is not None for f in (spec.sortino_min, spec.calmar_min,
+                                          spec.max_dd_max_pct)):
+            if len(closes_list) < 50:
+                skipped_no_bars += 1
+                continue
+            closes_s = pd.Series(closes_list)
+            if spec.sortino_min is not None:
+                srt = _sortino(closes_s, rf_annual=0.0)
+                if srt is None or srt < spec.sortino_min:
+                    continue
+            if spec.calmar_min is not None:
+                clm = _calmar(closes_s)
+                if clm is None or clm < spec.calmar_min:
+                    continue
+            if spec.max_dd_max_pct is not None:
+                ddx = _dd_details(closes_s)["max_drawdown_pct"]
+                # ddx is negative (e.g. -33.3). max_dd_max_pct is the WORST allowed
+                # (e.g. -30 means "no worse than -30%"). Exclude if ddx is more
+                # negative than the threshold.
+                if ddx < spec.max_dd_max_pct:
+                    continue
 
         results.append({
             "symbol": sym, "name": r["name"], "sector": r["sector"],

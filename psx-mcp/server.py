@@ -714,6 +714,9 @@ async def screen_symbols(
     roe_min: float | None = None,
     pb_max: float | None = None,
     div_yield_min: float | None = None,
+    sortino_min: float | None = None,
+    calmar_min: float | None = None,
+    max_dd_max_pct: float | None = None,
     sort_by: str = "symbol",
     desc: bool = False,
     limit: int = 50,
@@ -724,6 +727,7 @@ async def screen_symbols(
     - Value: pe_max=10, eps_min=5, sort_by="pe"
     - Tech leaders: sector="TECHNOLOGY & COMMUNICATION", above_sma200=True
     - Liquid movers: min_turnover_pkr=50_000_000, sort_by="change_pct", desc=True
+    - Risk-adjusted: sortino_min=1.0, max_dd_max_pct=-30 (no worse than -30% DD)
     """
     return _screen_symbols_impl(
         _cache,
@@ -734,6 +738,8 @@ async def screen_symbols(
         above_sma200=above_sma200, sma20_gt_sma50=sma20_gt_sma50,
         min_volume=min_volume, min_turnover_pkr=min_turnover_pkr,
         roe_min=roe_min, pb_max=pb_max, div_yield_min=div_yield_min,
+        sortino_min=sortino_min, calmar_min=calmar_min,
+        max_dd_max_pct=max_dd_max_pct,
         sort_by=sort_by, desc=desc, limit=limit,
     )
 

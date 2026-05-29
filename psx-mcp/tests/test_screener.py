@@ -24,12 +24,17 @@ def seeded_cache(tmp_path):
                            fetched_at=ts)
         cache.upsert_fundamentals(symbol=sym, eps=eps, pe=pe, pb=None,
                                   div_yield=None, payout=None, roe=None)
-        # Seed ~250 daily bars with mild uptrend so indicators have data
+        # Seed ~250 daily bars with mild uptrend so indicators have data.
+        # A small sine oscillation introduces both up and down bars so risk
+        # metrics (Sortino, Calmar, max-DD) are computable.
+        import math
         today = date(2026, 5, 23)
         bars = []
         for i in range(250):
             d = today - timedelta(days=250 - i)
-            close = price * (0.8 + i / 250 * 0.4)  # 80%..120% of current
+            trend = 0.8 + i / 250 * 0.4  # 80%..120% drift
+            osc = 0.02 * math.sin(i / 5.0)  # +/- 2% oscillation
+            close = price * (trend + osc)
             bars.append(Bar(symbol=sym, date=d, open=close, high=close * 1.01,
                             low=close * 0.99, close=close, volume=volume))
         cache.upsert_bars(bars)
@@ -110,6 +115,15 @@ def test_screen_results_include_roe_and_pb(seeded_cache):
     assert sys_row["pb"] == 4.0
     assert sys_row["div_yield"] == 2.5
     assert sys_row["payout"] == 40.0
+
+
+def test_screen_filters_by_sortino_min(seeded_cache):
+    """Symbols whose Sortino is below the threshold are excluded."""
+    from psx_mcp.screener import screen, FilterSpec
+    out = screen(seeded_cache, FilterSpec(sortino_min=-99.0))
+    assert len(out) >= 1
+    out_strict = screen(seeded_cache, FilterSpec(sortino_min=999.0))
+    assert len(out_strict) == 0
 
 
 def test_sector_summary_returns_breadth_and_leaders(seeded_cache):
