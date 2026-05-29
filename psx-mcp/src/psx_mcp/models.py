@@ -659,3 +659,20 @@ class CompanyQualitativeRefreshResponse(Disclaimer):
     news_bodies: dict
     elapsed_seconds: float
     note: Optional[str] = None
+
+
+class ResearchPackResponse(Disclaimer):
+    symbol: str
+    generated_at: str
+    lookback_days: int
+    quote: Optional[dict] = None
+    fundamentals: Optional[dict] = None
+    quadrant_score: Optional[dict] = None
+    announcements: list[dict] = []
+    news: list[dict] = []
+    insider_trades: list[dict] = []
+    upcoming_meetings: list[dict] = []
+    upcoming_dividends: list[dict] = []
+    llm_briefing_text: str
+    warnings: list[str] = []
+    note: Optional[str] = None

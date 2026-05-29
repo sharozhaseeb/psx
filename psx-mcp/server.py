@@ -42,6 +42,7 @@ from psx_mcp.models import (
     BoardMeeting, EarningsCalendarResponse,
     CorporateActionsCalendarResponse,
     CompanyQualitativeRefreshResponse,
+    ResearchPackResponse,
 )
 from psx_mcp.backtest import backtest_simple as _backtest_simple_pure
 from psx_mcp.screener import screen, FilterSpec, sector_summary
@@ -2385,6 +2386,193 @@ async def refresh_company_qualitative(symbol: str) -> CompanyQualitativeRefreshR
     + bulk_fetch_news_bodies for `symbol`. Use this BEFORE get_company_research_pack
     when starting fresh on a new symbol."""
     return await _refresh_company_qualitative_impl(_cache, _client, symbol)
+
+
+def _get_company_research_pack_impl(cache: Cache, symbol: str,
+                                       lookback_days: int = 30
+                                       ) -> ResearchPackResponse:
+    sym = symbol.upper()
+    warnings: list[str] = []
+    generated_at = datetime.now().isoformat()
+    since_iso = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+
+    quote = None
+    try:
+        q = _get_quote_impl(cache, sym)
+        quote = q.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"quote: {e!r}")
+
+    fundamentals = None
+    try:
+        f = cache.get_fundamentals(sym)
+        if f:
+            fundamentals = dict(f)
+        else:
+            warnings.append("No fundamentals cached for symbol.")
+    except Exception as e:
+        warnings.append(f"fundamentals: {e!r}")
+
+    qs_dict = None
+    try:
+        qs = _compute_4quadrant_score_impl(cache, sym)
+        qs_dict = qs.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"quadrant: {e!r}")
+
+    announcements: list[dict] = []
+    try:
+        rows = cache.conn.execute(
+            """SELECT id, posted_at, title, category, url, body, fetch_status
+               FROM announcements
+               WHERE symbol = ? AND posted_at >= ?
+               ORDER BY posted_at DESC LIMIT 20""",
+            (sym, since_iso),
+        ).fetchall()
+        for r in rows:
+            body = r["body"] or ""
+            ex = body[:500].strip()
+            announcements.append({
+                "id": r["id"], "posted_at": r["posted_at"], "title": r["title"],
+                "category": r["category"], "url": r["url"],
+                "fetch_status": r["fetch_status"],
+                "body_excerpt": ex,
+                "has_full_body": bool(body) and len(body) > 500,
+            })
+        if not announcements:
+            warnings.append(f"No announcements for {sym} in last {lookback_days} days.")
+    except Exception as e:
+        warnings.append(f"announcements: {e!r}")
+
+    news: list[dict] = []
+    try:
+        rows = cache.conn.execute(
+            """SELECT id, posted_at, title, source, url, body
+               FROM news
+               WHERE posted_at >= ? AND
+                     (',' || UPPER(symbols) || ',') LIKE ?
+               ORDER BY posted_at DESC LIMIT 10""",
+            (since_iso, f"%,{sym},%"),
+        ).fetchall()
+        for r in rows:
+            body = r["body"] or ""
+            ex = body[:500].strip()
+            news.append({
+                "id": r["id"], "posted_at": r["posted_at"], "title": r["title"],
+                "source": r["source"], "url": r["url"],
+                "body_excerpt": ex,
+                "has_full_body": bool(body) and len(body) > 500,
+            })
+    except Exception as e:
+        warnings.append(f"news: {e!r}")
+
+    try:
+        insider_trades = cache.get_insider_trades(sym, since_days=lookback_days * 2)
+    except Exception as e:
+        warnings.append(f"insider_trades: {e!r}")
+        insider_trades = []
+
+    upcoming_meetings: list[dict] = []
+    upcoming_dividends: list[dict] = []
+    try:
+        cal = _get_corporate_actions_calendar_impl(cache, sym,
+                                                     lookback_days=0,
+                                                     forward_days=60)
+        upcoming_meetings = list(cal.board_meetings)
+        upcoming_dividends = list(cal.dividend_events)
+    except Exception as e:
+        warnings.append(f"calendar: {e!r}")
+
+    parts: list[str] = []
+    parts.append(f"# Research Pack: {sym}")
+    parts.append(f"Generated: {generated_at}")
+    parts.append(f"Lookback: {lookback_days} days")
+    parts.append("")
+    if quote:
+        parts.append("## Latest Quote")
+        parts.append(f"Price: Rs {quote.get('price')}")
+        cp = quote.get('change_pct')
+        cp_str = f"{cp:+.2f}%" if isinstance(cp, (int, float)) else f"{cp}"
+        parts.append(f"Change: {quote.get('change')} ({cp_str})")
+        parts.append(f"Volume: {quote.get('volume')}")
+        parts.append(f"52w high/low: {quote.get('week52_high')} / {quote.get('week52_low')}")
+    if fundamentals:
+        parts.append("\n## Fundamentals (cached)")
+        for k in ("eps", "pe", "pb", "div_yield", "payout", "roe"):
+            v = fundamentals.get(k)
+            if v is not None:
+                parts.append(f"{k}: {v}")
+    if announcements:
+        parts.append("\n## Recent Announcements")
+        for a in announcements:
+            parts.append(f"\n[{a['posted_at'][:10]}] {a['title']}")
+            if a["body_excerpt"]:
+                parts.append(a["body_excerpt"])
+                if a["has_full_body"]:
+                    parts.append("(...full body cached; ask for it via the announcement id)")
+            else:
+                parts.append("(no body cached — call fetch_announcement_body or bulk_fetch_announcement_bodies)")
+    if news:
+        parts.append("\n## Recent News")
+        for n in news:
+            parts.append(f"\n[{n['posted_at'][:10]}] {n['title']} — {n.get('source')}")
+            if n["body_excerpt"]:
+                parts.append(n["body_excerpt"])
+    if insider_trades:
+        parts.append("\n## Director / Insider Trades")
+        for t in insider_trades:
+            parts.append(
+                f"{t.get('trade_date')}: {t.get('insider_name') or '?'} "
+                f"({t.get('insider_role') or '?'}) "
+                f"{t.get('action')} {t.get('qty')} shares"
+            )
+    if upcoming_meetings:
+        parts.append("\n## Upcoming Board Meetings")
+        for m in upcoming_meetings:
+            parts.append(f"{m.get('meeting_date')}: agenda={m.get('agenda')}")
+    if upcoming_dividends:
+        parts.append("\n## Upcoming Dividends")
+        for d in upcoming_dividends:
+            parts.append(
+                f"ex-date {d.get('ex_date')}: {d.get('payout_type')} "
+                f"Rs {d.get('per_share')}/share"
+            )
+    if qs_dict:
+        parts.append("\n## 4-Quadrant Composite Score")
+        parts.append(
+            f"V={qs_dict.get('value')} Q={qs_dict.get('quality')} "
+            f"M={qs_dict.get('momentum')} T={qs_dict.get('trend')} "
+            f"Total={qs_dict.get('total')}/4"
+        )
+    if warnings:
+        parts.append("\n## Data gaps")
+        for w in warnings:
+            parts.append(f"- {w}")
+
+    llm_text = "\n".join(parts)
+
+    return ResearchPackResponse(
+        symbol=sym, generated_at=generated_at, lookback_days=lookback_days,
+        quote=quote, fundamentals=fundamentals, quadrant_score=qs_dict,
+        announcements=announcements, news=news,
+        insider_trades=insider_trades,
+        upcoming_meetings=upcoming_meetings,
+        upcoming_dividends=upcoming_dividends,
+        llm_briefing_text=llm_text,
+        warnings=warnings,
+    )
+
+
+@mcp.tool()
+async def get_company_research_pack(symbol: str,
+                                       lookback_days: int = 30
+                                       ) -> ResearchPackResponse:
+    """Flagship LLM-companion tool: structured + raw qualitative text for the
+    last `lookback_days` days for `symbol`. Includes quote, fundamentals,
+    quadrant score, announcement bodies, news bodies, director trades, and
+    upcoming meetings/dividends. The `llm_briefing_text` field is a
+    pre-concatenated markdown briefing suitable for direct LLM consumption."""
+    return _get_company_research_pack_impl(_cache, symbol, lookback_days)
 
 
 if __name__ == "__main__":
