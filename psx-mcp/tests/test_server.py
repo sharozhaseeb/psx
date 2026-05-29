@@ -1520,3 +1520,29 @@ def test_fetch_announcement_body_populates_board_meeting_table(tmp_path, monkeyp
     rows = cache.get_board_meetings("SYS", since=date(2026, 6, 1), until=date(2026, 7, 1))
     assert len(rows) == 1
     assert rows[0]["agenda"] == "financial_results"
+
+
+def test_get_insider_trades_summary_and_net_qty(tmp_path):
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_insider_trade(
+        announcement_id="A1", symbol="SYS",
+        insider_name="X", insider_role="Director",
+        action="buy", qty=10_000, pct_holding=None,
+        trade_date=date(2026, 4, 15), posted_at=date(2026, 4, 16),
+    )
+    cache.upsert_insider_trade(
+        announcement_id="A2", symbol="SYS",
+        insider_name="Y", insider_role="Executive",
+        action="sell", qty=3_000, pct_holding=None,
+        trade_date=date(2026, 5, 1), posted_at=date(2026, 5, 2),
+    )
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._get_insider_trades_impl(cache, "SYS", since_days=365)
+    assert len(out.trades) == 2
+    assert out.net_qty == 10_000 - 3_000

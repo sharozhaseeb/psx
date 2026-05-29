@@ -38,7 +38,7 @@ from psx_mcp.models import (
     FullAnalysisResponse, PositionSizeResponse,
     CacheStatusResponse, BulkRefreshResponse,
     UpcomingEventsResponse, WatchlistWithScoresResponse,
-    BacktestResponse,
+    BacktestResponse, InsiderTrade, InsiderTradeListResponse,
 )
 from psx_mcp.backtest import backtest_simple as _backtest_simple_pure
 from psx_mcp.screener import screen, FilterSpec, sector_summary
@@ -1678,6 +1678,35 @@ async def get_dividend_history(symbol: str) -> list[DividendEvent]:
     """Cached dividend events for symbol, newest ex-date first.
     Call refresh_dividends(symbol) first to populate."""
     return _get_dividend_history_impl(_cache, symbol)
+
+
+# ---- insider trades ----
+
+def _get_insider_trades_impl(cache: Cache, symbol: str,
+                              since_days: int = 365) -> InsiderTradeListResponse:
+    rows = cache.get_insider_trades(symbol, since_days=since_days)
+    trades = [InsiderTrade(**r) for r in rows]
+    net_qty = None
+    if trades:
+        net = 0
+        for t in trades:
+            if t.qty is None or t.action is None:
+                continue
+            net += t.qty if t.action == "buy" else -t.qty
+        net_qty = net
+    return InsiderTradeListResponse(
+        symbol=symbol.upper(), since_days=since_days,
+        trades=trades, net_qty=net_qty,
+    )
+
+
+@mcp.tool()
+async def get_insider_trades(symbol: str,
+                              since_days: int = 365) -> InsiderTradeListResponse:
+    """Director / CEO / Executive transactions for symbol. Populated when
+    fetch_announcement_body parses a 'Disclosure of Interest by Director'
+    announcement. net_qty is buy total - sell total (positive = net buying)."""
+    return _get_insider_trades_impl(_cache, symbol, since_days)
 
 
 # ---- cache diagnostics + bulk refresh ----

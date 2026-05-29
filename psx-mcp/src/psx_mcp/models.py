@@ -574,3 +574,32 @@ class DividendEvent(BaseModel):
         if isinstance(v, str) and v.strip() == "":
             return None
         return v
+
+
+class InsiderTrade(BaseModel):
+    announcement_id: str
+    symbol: str
+    insider_name: Optional[str] = None
+    insider_role: Optional[str] = None
+    action: Optional[str] = None
+    qty: Optional[int] = None
+    pct_holding: Optional[float] = None
+    trade_date: Optional[date] = None
+    posted_at: str
+
+    @field_validator("trade_date", mode="before")
+    @classmethod
+    def _coerce_blank(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+
+class InsiderTradeListResponse(Disclaimer):
+    symbol: str
+    since_days: int
+    trades: list[InsiderTrade]
+    net_qty: Optional[int] = None
+    note: Optional[str] = None
