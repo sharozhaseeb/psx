@@ -423,3 +423,73 @@ def tail_ratio(closes: pd.Series, quantile: float = 0.05) -> Optional[float]:
     if denom == 0.0 or not math.isfinite(denom):
         return None
     return float(abs(upper) / denom)
+
+
+def up_down_capture(
+    stock_closes: pd.Series, benchmark_closes: pd.Series
+) -> dict:
+    """Up/down capture ratios.
+
+    For each period where benchmark return > 0, computes stock_return /
+    benchmark_return; averages over all such periods → up_capture (as %).
+    Same logic for benchmark return < 0 → down_capture.
+
+    100% = matches the benchmark. > 100% on up-capture = aggressive/high-beta.
+    < 100% on down-capture = defensive. Best profile: high up-capture + low
+    down-capture.
+
+    Both series are aligned by tail position (no date check at this layer —
+    callers must date-align before passing in).
+
+    Returns a dict with:
+      - up_capture_pct: float or None (None if no up periods or zero benchmark mean)
+      - down_capture_pct: float or None (None if no down periods or zero benchmark mean)
+      - n_up_periods: int count of periods with benchmark return > 0
+      - n_down_periods: int count of periods with benchmark return < 0
+    """
+    if stock_closes is None or benchmark_closes is None:
+        return {
+            "up_capture_pct": None,
+            "down_capture_pct": None,
+            "n_up_periods": 0,
+            "n_down_periods": 0,
+        }
+    if len(stock_closes) < 3 or len(benchmark_closes) < 3:
+        return {
+            "up_capture_pct": None,
+            "down_capture_pct": None,
+            "n_up_periods": 0,
+            "n_down_periods": 0,
+        }
+    s_rets = stock_closes.pct_change().dropna().reset_index(drop=True)
+    b_rets = benchmark_closes.pct_change().dropna().reset_index(drop=True)
+    n = min(len(s_rets), len(b_rets))
+    if n < 1:
+        return {
+            "up_capture_pct": None,
+            "down_capture_pct": None,
+            "n_up_periods": 0,
+            "n_down_periods": 0,
+        }
+    s_rets = s_rets.iloc[-n:].values
+    b_rets = b_rets.iloc[-n:].values
+    up_mask = b_rets > 0
+    down_mask = b_rets < 0
+    up_cap: Optional[float] = None
+    down_cap: Optional[float] = None
+    if up_mask.sum() >= 1:
+        b_up = float(b_rets[up_mask].mean())
+        s_up = float(s_rets[up_mask].mean())
+        if b_up != 0.0 and math.isfinite(b_up):
+            up_cap = float(s_up / b_up * 100.0)
+    if down_mask.sum() >= 1:
+        b_dn = float(b_rets[down_mask].mean())
+        s_dn = float(s_rets[down_mask].mean())
+        if b_dn != 0.0 and math.isfinite(b_dn):
+            down_cap = float(s_dn / b_dn * 100.0)
+    return {
+        "up_capture_pct": up_cap,
+        "down_capture_pct": down_cap,
+        "n_up_periods": int(up_mask.sum()),
+        "n_down_periods": int(down_mask.sum()),
+    }

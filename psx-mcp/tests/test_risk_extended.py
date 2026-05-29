@@ -17,6 +17,7 @@ from psx_mcp.risk_extended import (
     tail_ratio,
     drawdown_details,
     ulcer_index,
+    up_down_capture,
 )
 
 
@@ -267,3 +268,41 @@ def test_ulcer_index_drawdown_series_is_positive():
     result = ulcer_index(closes)
     assert result is not None
     assert result > 0.0
+
+
+def test_up_capture_high_beta_above_100():
+    """If stock returns are 2x benchmark in up periods, up-capture = ~200%."""
+    bench_rets = [0.01, 0.02, 0.015, -0.005, 0.01]
+    stock_rets = [0.02, 0.04, 0.03, -0.005, 0.02]
+    bench_vals = [100.0]
+    stock_vals = [100.0]
+    for r in bench_rets:
+        bench_vals.append(bench_vals[-1] * (1 + r))
+    for r in stock_rets:
+        stock_vals.append(stock_vals[-1] * (1 + r))
+    out = up_down_capture(pd.Series(stock_vals), pd.Series(bench_vals))
+    assert out["up_capture_pct"] is not None
+    assert out["up_capture_pct"] > 150.0  # stock outpaces bench in up periods
+
+
+def test_down_capture_defensive_below_100():
+    """Stock that drops half as fast as benchmark in down periods."""
+    bench_rets = [0.01, -0.04, -0.02, 0.005, -0.03]
+    stock_rets = [0.01, -0.02, -0.01, 0.005, -0.015]
+    bench_vals = [100.0]
+    stock_vals = [100.0]
+    for r in bench_rets:
+        bench_vals.append(bench_vals[-1] * (1 + r))
+    for r in stock_rets:
+        stock_vals.append(stock_vals[-1] * (1 + r))
+    out = up_down_capture(pd.Series(stock_vals), pd.Series(bench_vals))
+    assert out["down_capture_pct"] is not None
+    assert out["down_capture_pct"] < 75.0  # defensive: caught less than half the downside
+
+
+def test_up_down_capture_short_series_returns_none():
+    s = pd.Series([100.0, 101.0])
+    b = pd.Series([100.0, 101.0])
+    out = up_down_capture(s, b)
+    assert out["up_capture_pct"] is None
+    assert out["down_capture_pct"] is None
