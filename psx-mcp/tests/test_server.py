@@ -1112,3 +1112,68 @@ def test_get_news_returns_cached_rows(tmp_path):
     # filter miss -> empty list (not an error)
     out_miss = srv._get_news_impl(cache, "NOTAREALSYM", 7)
     assert out_miss == []
+
+
+def test_compute_up_down_capture_aggressive_2x_stock(tmp_path):
+    """Stock moves 2x the index on each aligned bar.
+    Expect up_capture_pct ~= 200 and down_capture_pct ~= 200."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 29)
+    # Index returns over 5 bars: [+1%, -2%, +3%, -1%, +2%] (after the initial bar).
+    idx_rets = [0.01, -0.02, 0.03, -0.01, 0.02]
+    idx_closes = [100.0]
+    stock_closes = [50.0]
+    for r in idx_rets:
+        idx_closes.append(idx_closes[-1] * (1.0 + r))
+        # Stock = 2x the index return on the same bar.
+        stock_closes.append(stock_closes[-1] * (1.0 + 2.0 * r))
+    dates = [today - timedelta(days=len(idx_closes) - 1 - i)
+             for i in range(len(idx_closes))]
+    for d, sc in zip(dates, stock_closes):
+        cache.upsert_bars([Bar(symbol="XYZ", date=d, open=sc, high=sc,
+                                low=sc, close=sc, volume=1)])
+    for d, ic in zip(dates, idx_closes):
+        cache.upsert_index_bar(index_code="KSE100", bar_date=d,
+                                close=ic, volume=1e8)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_up_down_capture_impl(cache, "XYZ", "KSE100")
+    assert out.symbol == "XYZ"
+    assert out.index_code == "KSE100"
+    assert out.n_aligned_bars == 6
+    assert out.n_up_periods == 3
+    assert out.n_down_periods == 2
+    assert out.up_capture_pct is not None
+    assert out.down_capture_pct is not None
+    assert out.up_capture_pct == pytest.approx(200.0, rel=1e-2)
+    assert out.down_capture_pct == pytest.approx(200.0, rel=1e-2)
+    assert out.note is None
+
+
+def test_compute_up_down_capture_insufficient_overlap(tmp_path):
+    """< 3 aligned bars → note set, captures stay None."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 29)
+    cache.upsert_bars([Bar(symbol="XYZ", date=today, open=100, high=100,
+                            low=100, close=100, volume=1)])
+    cache.upsert_index_bar(index_code="KSE100", bar_date=today,
+                            close=10000.0, volume=1e8)
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_up_down_capture_impl(cache, "XYZ", "KSE100")
+    assert out.n_aligned_bars == 1
+    assert out.up_capture_pct is None
+    assert out.down_capture_pct is None
+    assert out.note is not None and "Need at least 3" in out.note

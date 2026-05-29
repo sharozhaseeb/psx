@@ -391,6 +391,17 @@ class DrawdownDetailsResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class UpDownCaptureResponse(Disclaimer):
+    symbol: str
+    index_code: str
+    up_capture_pct: Optional[float] = None
+    down_capture_pct: Optional[float] = None
+    n_up_periods: int = 0
+    n_down_periods: int = 0
+    n_aligned_bars: int = 0
+    note: Optional[str] = None
+
+
 class RelativeStrengthResponse(Disclaimer):
     symbol: str
     index_code: str

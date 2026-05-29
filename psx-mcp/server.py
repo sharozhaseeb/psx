@@ -55,7 +55,7 @@ from psx_mcp.risk_extended import (
 )
 from psx_mcp.models import (
     ReturnStatsResponse, DistributionStatsResponse,
-    DrawdownDetailsResponse,
+    DrawdownDetailsResponse, UpDownCaptureResponse,
 )
 from psx_mcp.quality import (
     compute_quality_score as _compute_quality_score_pure,
@@ -988,6 +988,34 @@ def _compute_relative_strength_impl(cache: Cache, symbol: str,
     )
 
 
+def _compute_up_down_capture_impl(cache: Cache, symbol: str,
+                                    index_code: str = "KSE100") -> UpDownCaptureResponse:
+    stock_pairs = cache.closes_for_with_dates(symbol)
+    stock_by_date = dict(stock_pairs)
+    idx_rows = cache.get_index_history(index_code)
+    idx_by_date = {r["bar_date"]: r["close"] for r in idx_rows}
+    common = sorted(set(stock_by_date) & set(idx_by_date))
+    if len(common) < 3:
+        return UpDownCaptureResponse(
+            symbol=symbol.upper(), index_code=index_code,
+            n_aligned_bars=len(common),
+            note=(f"Need at least 3 aligned bars; have {len(common)}. "
+                  f"Call refresh_history({symbol!r}) and refresh_market."),
+        )
+    s = pd.Series([stock_by_date[d] for d in common])
+    b = pd.Series([idx_by_date[d] for d in common])
+    out = up_down_capture(s, b)
+    return UpDownCaptureResponse(
+        symbol=symbol.upper(), index_code=index_code,
+        up_capture_pct=out["up_capture_pct"],
+        down_capture_pct=out["down_capture_pct"],
+        n_up_periods=out["n_up_periods"],
+        n_down_periods=out["n_down_periods"],
+        n_aligned_bars=len(common),
+        note=None,
+    )
+
+
 def _compute_correlation_impl(cache: Cache, symbols: list[str]) -> CorrelationMatrixResponse:
     syms_upper = [s.upper() for s in symbols]
     closes_by = {s: pd.Series(cache.closes_for(s)) for s in syms_upper}
@@ -1051,6 +1079,14 @@ async def compute_relative_strength(symbol: str, index_code: str = "KSE100",
     Positive = stock outperformed; negative = lagged. Uses cached bars_daily +
     indices_history (call refresh_history and refresh_market first)."""
     return _compute_relative_strength_impl(_cache, symbol, index_code, window)
+
+
+@mcp.tool()
+async def compute_up_down_capture(symbol: str,
+                                   index_code: str = "KSE100") -> UpDownCaptureResponse:
+    """Up/down capture vs an index. > 100% up-capture = aggressive; < 100%
+    down-capture = defensive. Best profile: high up + low down."""
+    return _compute_up_down_capture_impl(_cache, symbol, index_code)
 
 
 @mcp.tool()
