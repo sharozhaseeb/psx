@@ -135,6 +135,31 @@ def test_compute_indicators_default_bundle(tmp_path):
         assert key in out, f"missing default indicator {key}"
 
 
+def test_compute_indicators_supports_new_names(tmp_path):
+    """Dispatch must accept adx14, stochastic, obv, williams_r."""
+    import server as srv
+    from psx_mcp.models import Bar
+    cache = Cache(str(tmp_path / "t.db"))
+    today = date.today()
+    # Seed 60 trending bars so ADX/Stochastic have enough history.
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=59 - i),
+                open=100.0 + i * 0.5, high=105.0 + i * 0.5,
+                low=95.0 + i * 0.5, close=100.0 + i * 0.5, volume=1000)
+            for i in range(60)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")), client=None)
+    out = srv._compute_indicators_impl(
+        cache, "XYZ",
+        indicators=["adx14", "stochastic", "obv", "williams_r"],
+        lookback_days=200,
+    )
+    assert isinstance(out["adx14"], float)
+    assert isinstance(out["stochastic"], dict)
+    assert {"%K", "%D"} <= set(out["stochastic"].keys())
+    assert isinstance(out["obv"], float)
+    assert isinstance(out["williams_r"], float)
+
+
 import asyncio
 import httpx
 import respx

@@ -16,7 +16,10 @@ from psx_mcp.psx_client import (
     parse_profile, parse_financials, parse_financial_statements, parse_payouts,
 )
 from psx_mcp.symbols import search_symbols
-from psx_mcp.indicators import rsi, sma, ema, macd, bollinger, volume_zscore, atr
+from psx_mcp.indicators import (
+    rsi, sma, ema, macd, bollinger, volume_zscore, atr,
+    adx, stochastic, obv, williams_r,
+)
 from psx_mcp.df_utils import bars_df
 from psx_mcp.alerts import run_alerts
 from psx_mcp.news import FEEDS, parse_rss, find_symbol_mentions
@@ -159,6 +162,17 @@ def _compute_indicators_impl(cache: Cache, symbol: str, indicators: list[str] | 
             elif name.startswith("atr"):
                 window = int(name[3:]) if len(name) > 3 else 14
                 out[name] = float(atr(df["high"], df["low"], df["close"], window).iloc[-1])
+            elif name.startswith("adx"):
+                window = int(name[3:]) if len(name) > 3 else 14
+                out[name] = float(adx(df["high"], df["low"], df["close"], window).iloc[-1])
+            elif name == "stochastic":
+                s = stochastic(df["high"], df["low"], df["close"]).iloc[-1]
+                out[name] = {"%K": float(s["%K"]), "%D": float(s["%D"])}
+            elif name == "obv":
+                out[name] = float(obv(df["close"], df["volume"]).iloc[-1])
+            elif name.startswith("williams_r"):
+                window = int(name[len("williams_r"):]) if len(name) > len("williams_r") else 14
+                out[name] = float(williams_r(df["high"], df["low"], df["close"], window).iloc[-1])
             else:
                 out[name] = {"error": f"unknown indicator: {name}"}
         except (ValueError, IndexError, KeyError, ZeroDivisionError) as e:
