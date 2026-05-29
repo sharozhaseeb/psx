@@ -542,6 +542,17 @@ class AnnouncementBodyResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class NewsBodyResponse(Disclaimer):
+    news_id: str
+    source: Optional[str] = None
+    title: Optional[str] = None
+    url: Optional[str] = None
+    fetch_status: str
+    body: Optional[str] = None
+    body_chars: int = 0
+    note: Optional[str] = None
+
+
 class BulkBodyFetchResponse(Disclaimer):
     symbol: Optional[str] = None
     since_days: int

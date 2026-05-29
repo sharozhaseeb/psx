@@ -72,7 +72,7 @@ from psx_mcp.pdf_extractor import (
     extract_text_or_empty, is_probably_scan_only,
 )
 from psx_mcp.models import (
-    AnnouncementBodyResponse, BulkBodyFetchResponse,
+    AnnouncementBodyResponse, BulkBodyFetchResponse, NewsBodyResponse,
 )
 from psx_mcp.models import (
     CrossSectionalRankResponse, SectorDispersionResponse,
@@ -2189,6 +2189,143 @@ async def bulk_fetch_announcement_bodies(symbol: str | None = None,
     concurrency=4, 250ms between requests. Raise these cautiously — PSX may
     rate-limit aggressive crawlers."""
     return await _bulk_fetch_announcement_bodies_impl(
+        _cache, _client, symbol, since_days, limit, concurrency, delay_ms,
+    )
+
+
+# ============================================================================
+# News body fetch (Phase 5 of Part-5)
+# ============================================================================
+
+from psx_mcp.news import extract_article_body  # noqa: E402
+
+
+async def _fetch_news_body_impl(cache: Cache, client: PSXClient,
+                                  news_id: str) -> NewsBodyResponse:
+    row = cache.conn.execute(
+        "SELECT source, title, url, body, fetch_status FROM news WHERE id = ?",
+        (news_id,),
+    ).fetchone()
+    if not row:
+        return NewsBodyResponse(news_id=news_id, fetch_status="not_found",
+                                 note="No news row with that id in cache.")
+    if row["fetch_status"]:
+        return NewsBodyResponse(
+            news_id=news_id, source=row["source"], title=row["title"],
+            url=row["url"], fetch_status=row["fetch_status"],
+            body=row["body"],
+            body_chars=len(row["body"] or ""),
+            note="Returning cached body; previously fetched.",
+        )
+    if not row["url"]:
+        cache.update_news_body(news_id, None, "no_url")
+        return NewsBodyResponse(news_id=news_id, source=row["source"],
+                                  title=row["title"], url=None,
+                                  fetch_status="no_url")
+    if client is None:
+        return NewsBodyResponse(news_id=news_id, source=row["source"],
+                                  title=row["title"], url=row["url"],
+                                  fetch_status="no_client",
+                                  note="No PSX client; set_dependencies(client=...) was None.")
+
+    html_bytes = await client.fetch_url_bytes(row["url"])
+    if html_bytes is None:
+        cache.update_news_body(news_id, None, "http_error")
+        return NewsBodyResponse(news_id=news_id, source=row["source"],
+                                  title=row["title"], url=row["url"],
+                                  fetch_status="http_error")
+    try:
+        text = extract_article_body(
+            html_bytes.decode("utf-8", errors="ignore"),
+            url=row["url"],
+        )
+    except Exception:
+        text = ""
+    if not text or len(text) < 100:
+        cache.update_news_body(news_id, text or None, "parse_error")
+        return NewsBodyResponse(news_id=news_id, source=row["source"],
+                                  title=row["title"], url=row["url"],
+                                  fetch_status="parse_error",
+                                  body=text or None, body_chars=len(text or ""))
+    cache.update_news_body(news_id, text, "ok")
+    return NewsBodyResponse(news_id=news_id, source=row["source"],
+                              title=row["title"], url=row["url"],
+                              fetch_status="ok",
+                              body=text, body_chars=len(text))
+
+
+async def _bulk_fetch_news_bodies_impl(cache: Cache, client: PSXClient,
+                                         symbol: Optional[str],
+                                         since_days: int = 14,
+                                         limit: int = 20,
+                                         concurrency: int = 4,
+                                         delay_ms: int = 250
+                                         ) -> BulkBodyFetchResponse:
+    rows = cache.get_news_missing_body(symbol=symbol, since_days=since_days,
+                                         limit=limit)
+    started = _time.time()
+    summary = {"attempted": 0, "succeeded": 0, "skipped_no_url": 0,
+               "failed_http": 0, "failed_scan": 0, "failed_parse": 0,
+               "failed_other": 0}
+
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def one(rid: str):
+        async with sem:
+            resp = await _fetch_news_body_impl(cache, client, rid)
+            if delay_ms > 0:
+                await asyncio.sleep(delay_ms / 1000.0)
+            return resp
+
+    if rows:
+        results = await asyncio.gather(*(one(r["id"]) for r in rows),
+                                         return_exceptions=False)
+    else:
+        results = []
+
+    for resp in results:
+        summary["attempted"] += 1
+        s = resp.fetch_status
+        if s == "ok":
+            summary["succeeded"] += 1
+        elif s == "no_url":
+            summary["skipped_no_url"] += 1
+        elif s == "http_error":
+            summary["failed_http"] += 1
+        elif s == "parse_error":
+            summary["failed_parse"] += 1
+        else:
+            summary["failed_other"] += 1
+    return BulkBodyFetchResponse(
+        symbol=symbol.upper() if symbol else None,
+        since_days=since_days,
+        attempted=summary["attempted"],
+        succeeded=summary["succeeded"],
+        skipped_no_url=summary["skipped_no_url"],
+        failed_http=summary["failed_http"],
+        failed_scan=summary["failed_scan"],
+        failed_parse=summary["failed_parse"],
+        failed_other=summary["failed_other"],
+        elapsed_seconds=_time.time() - started,
+    )
+
+
+@mcp.tool()
+async def fetch_news_body(news_id: str) -> NewsBodyResponse:
+    """Fetch + cache the article body for a single news item. Same idempotent
+    pattern as fetch_announcement_body."""
+    return await _fetch_news_body_impl(_cache, _client, news_id)
+
+
+@mcp.tool()
+async def bulk_fetch_news_bodies(symbol: str | None = None,
+                                   since_days: int = 14,
+                                   limit: int = 20,
+                                   concurrency: int = 4,
+                                   delay_ms: int = 250) -> BulkBodyFetchResponse:
+    """Bulk-fetch article bodies. Polite defaults: limit=20, concurrency=4,
+    250ms between requests. Skips items already attempted."""
+    return await _bulk_fetch_news_bodies_impl(
         _cache, _client, symbol, since_days, limit, concurrency, delay_ms,
     )
 

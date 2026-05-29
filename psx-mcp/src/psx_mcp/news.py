@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 import hashlib
 from datetime import datetime
-from typing import Iterable
+from typing import Iterable, Optional
 
 import feedparser
 
@@ -35,3 +35,58 @@ def find_symbol_mentions(title: str, body: str, universe: Iterable[str]) -> list
         if re.search(rf"\b{re.escape(sym)}\b", text):
             hits.append(sym)
     return hits
+
+
+def extract_article_body(html: str, url: Optional[str] = None) -> str:
+    """Article-body extraction. Tries per-host selectors first (Dawn / Profit /
+    Tribune / Brecorder), then a generic semantic-selector pass, then a
+    longest-<p>-block fallback. Per-host selectors prevent missing Dawn's
+    `div.story__content` (double-underscore) and Profit's `td-post-content`."""
+    from bs4 import BeautifulSoup
+    from urllib.parse import urlparse
+    if not html or not html.strip():
+        return ""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["script", "style", "noscript", "iframe"]):
+        tag.decompose()
+
+    HOST_SELECTORS = [
+        ("dawn.com",       ["div.story__content", "div.story-content"]),
+        ("profit.pakistantoday.com.pk",
+                            ["div.td-post-content", "article.entry-content"]),
+        ("tribune.com.pk", ["div.story-text", "div.story-content"]),
+        ("brecorder.com",  ["div.story-content", "div.entry-content"]),
+    ]
+    host = ""
+    if url:
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            host = ""
+    for host_sub, selectors in HOST_SELECTORS:
+        if host_sub in host:
+            for sel in selectors:
+                for el in soup.select(sel):
+                    text = el.get_text("\n", strip=True)
+                    if len(text) > 200:
+                        return text
+
+    candidates = []
+    for sel in ("article", "main", "div.story__content", "div.story-content",
+                  "div.article-body", "div#article-body", "div.entry-content",
+                  "div.td-post-content"):
+        for el in soup.select(sel):
+            text = el.get_text("\n", strip=True)
+            if len(text) > 200:
+                candidates.append(text)
+    if candidates:
+        return max(candidates, key=len)
+
+    best_text = ""
+    for div in soup.find_all(["div", "section", "article"]):
+        ps = div.find_all("p", recursive=False)
+        if len(ps) >= 3:
+            text = "\n".join(p.get_text(" ", strip=True) for p in ps)
+            if len(text) > len(best_text):
+                best_text = text
+    return best_text

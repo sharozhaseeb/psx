@@ -1,4 +1,4 @@
-from psx_mcp.news import parse_rss, find_symbol_mentions
+from psx_mcp.news import parse_rss, find_symbol_mentions, extract_article_body
 
 
 def test_parse_dawn_business(fixtures_dir):
@@ -30,3 +30,26 @@ def test_symbol_mentions_requires_word_boundary():
     title = "Plucky bidder wins auction"
     mentions = find_symbol_mentions(title, "", {"LUCK"})
     assert "LUCK" not in mentions
+
+
+def test_extract_article_body_from_synthetic_html():
+    html = """
+    <html><body>
+      <nav><a>menu</a></nav>
+      <article>
+        <h1>Headline</h1>
+        <p>First paragraph of the actual story body with enough words.</p>
+        <p>Second paragraph continuing the narrative for the reader.</p>
+        <p>Third paragraph with the substantive content of the article.</p>
+      </article>
+      <footer>Copyright 2026</footer>
+    </body></html>
+    """
+    text = extract_article_body(html)
+    assert "First paragraph" in text
+    assert "Copyright" not in text
+
+
+def test_extract_article_body_empty_input():
+    assert extract_article_body("") == ""
+    assert extract_article_body("not html at all") == ""

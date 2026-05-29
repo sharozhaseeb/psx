@@ -1607,3 +1607,34 @@ def test_get_corporate_actions_calendar_merges_dividends_and_meetings(tmp_path):
                                                      lookback_days=30, forward_days=60)
     assert len(out.dividend_events) == 1
     assert len(out.board_meetings) == 1
+
+
+def test_fetch_news_body_caches_html_body(tmp_path, monkeypatch):
+    import asyncio
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.watchlist import WatchlistStore
+    from psx_mcp.psx_client import PSXClient
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.conn.execute(
+        """INSERT INTO news(id, source, posted_at, title, url, symbols)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("N1", "dawn_business", datetime.now().isoformat(),
+         "PSX hits new high", "https://example.com/article", "KSE100"),
+    )
+    cache.conn.commit()
+
+    async def fake_fetch(self, url, timeout=30.0):
+        return (b"<html><body><article>"
+                b"<p>The PSX index reached a new all-time high today.</p>"
+                b"<p>Brokers attributed the move to strong banking earnings.</p>"
+                b"<p>Volumes were 30% above the 30-day average.</p>"
+                b"</article></body></html>")
+    monkeypatch.setattr(PSXClient, "fetch_url_bytes", fake_fetch)
+
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=PSXClient())
+    out = asyncio.run(srv._fetch_news_body_impl(cache, PSXClient(), "N1"))
+    assert out.fetch_status == "ok"
+    assert "PSX index reached" in out.body
