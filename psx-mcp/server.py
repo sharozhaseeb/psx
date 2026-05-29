@@ -80,6 +80,9 @@ from psx_mcp.quality import (
     compute_quality_score as _compute_quality_score_pure,
     compute_4quadrant_score as _compute_4quadrant_score_pure,
 )
+from psx_mcp.events import (
+    classify_announcement, parse_insider_trade, parse_board_meeting,
+)
 from psx_mcp.logging_config import configure_logging, get_logger
 
 mcp = FastMCP(
@@ -1886,8 +1889,8 @@ async def _fetch_announcement_body_impl(cache: Cache, client: PSXClient,
     without re-fetching. Never auto-retries — caller can clear fetch_status
     via raw SQL to force retry."""
     row = cache.conn.execute(
-        "SELECT symbol, title, url, body, fetch_status FROM announcements "
-        "WHERE id = ?",
+        "SELECT symbol, title, url, body, fetch_status, posted_at "
+        "FROM announcements WHERE id = ?",
         (announcement_id,),
     ).fetchone()
     if not row:
@@ -1948,6 +1951,39 @@ async def _fetch_announcement_body_impl(cache: Cache, client: PSXClient,
             note="PDF looks scan-only; OCR would be needed for full text.",
         )
     cache.update_announcement_body(announcement_id, text, "ok")
+    # Auto-populate structured event tables based on title classification.
+    # Critic C BLOCKER fix: only route 'board_meeting' to parse_board_meeting.
+    # 'financial_results' titles contain "period ended" dates that would
+    # otherwise be incorrectly captured as meeting dates.
+    cat = classify_announcement(row["title"] or "")
+    try:
+        if cat == "insider_trade":
+            parsed = parse_insider_trade(text)
+            if parsed:
+                cache.upsert_insider_trade(
+                    announcement_id=announcement_id,
+                    symbol=row["symbol"],
+                    insider_name=parsed["insider_name"],
+                    insider_role=parsed["insider_role"],
+                    action=parsed["action"],
+                    qty=parsed["qty"],
+                    pct_holding=parsed["pct_holding"],
+                    trade_date=parsed["trade_date"],
+                    posted_at=row["posted_at"],
+                )
+        elif cat == "board_meeting":
+            parsed = parse_board_meeting(title=row["title"], body=text)
+            if parsed:
+                cache.upsert_board_meeting(
+                    announcement_id=announcement_id,
+                    symbol=row["symbol"],
+                    meeting_date=parsed["meeting_date"],
+                    agenda=parsed["agenda"],
+                    posted_at=row["posted_at"],
+                )
+    except Exception:
+        # Auto-extraction is best-effort; never block the body cache on parser bugs.
+        pass
     return AnnouncementBodyResponse(
         announcement_id=announcement_id, symbol=row["symbol"],
         title=row["title"], url=row["url"],

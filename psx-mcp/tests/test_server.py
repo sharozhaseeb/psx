@@ -1442,3 +1442,81 @@ def test_fetch_announcement_body_no_url_returns_no_url_status(tmp_path):
     out = asyncio.run(srv._fetch_announcement_body_impl(cache, None, "A2"))
     assert out.fetch_status == "no_url"
     assert out.body is None
+
+
+def test_fetch_announcement_body_populates_insider_trade_table(tmp_path, monkeypatch):
+    """When body parses as a director disclosure, insider_trades is populated."""
+    import asyncio
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Announcement
+    from psx_mcp.watchlist import WatchlistStore
+    from psx_mcp.psx_client import PSXClient
+    from datetime import datetime
+
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_announcement(Announcement(
+        id="A1", symbol="SYS", posted_at=datetime(2026, 4, 16),
+        title="Disclosure of Interest by a Director CEO, or Executive",
+        category=None,
+        url="https://dps.psx.com.pk/download/document/1.pdf", body=None,
+    ))
+
+    async def fake_fetch(self, url, timeout=30.0):
+        return b"%PDF-fake"
+    monkeypatch.setattr(PSXClient, "fetch_url_bytes", fake_fetch)
+    monkeypatch.setattr(
+        "server.extract_text_or_empty",
+        lambda b: ("Disclosure of Interest by a Director CEO, or Executive "
+                   "Mr. Asif Peer Director purchased 10,000 shares on 15-April-2026."),
+    )
+
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=PSXClient())
+
+    asyncio.run(srv._fetch_announcement_body_impl(cache, PSXClient(), "A1"))
+
+    trades = cache.get_insider_trades("SYS")
+    assert len(trades) == 1
+    t = trades[0]
+    assert t["action"] == "buy"
+    assert t["qty"] == 10000
+
+
+def test_fetch_announcement_body_populates_board_meeting_table(tmp_path, monkeypatch):
+    """When body parses as a board-meeting notice with a date, board_meetings is populated."""
+    import asyncio
+    from datetime import date, datetime
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Announcement
+    from psx_mcp.watchlist import WatchlistStore
+    from psx_mcp.psx_client import PSXClient
+
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_announcement(Announcement(
+        id="B1", symbol="SYS", posted_at=datetime(2026, 5, 28),
+        title="Notice of Board Meeting",
+        category=None,
+        url="https://dps.psx.com.pk/download/document/2.pdf", body=None,
+    ))
+
+    async def fake_fetch(self, url, timeout=30.0):
+        return b"%PDF-fake"
+    monkeypatch.setattr(PSXClient, "fetch_url_bytes", fake_fetch)
+    monkeypatch.setattr(
+        "server.extract_text_or_empty",
+        lambda b: ("Notice of Board Meeting. The Board will meet on "
+                   "30-June-2026 to consider the quarterly financial results."),
+    )
+
+    srv.set_dependencies(cache=cache,
+                         store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=PSXClient())
+
+    asyncio.run(srv._fetch_announcement_body_impl(cache, PSXClient(), "B1"))
+
+    rows = cache.get_board_meetings("SYS", since=date(2026, 6, 1), until=date(2026, 7, 1))
+    assert len(rows) == 1
+    assert rows[0]["agenda"] == "financial_results"
