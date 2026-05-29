@@ -1,6 +1,6 @@
 from __future__ import annotations
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Optional, Iterable
 
@@ -372,6 +372,36 @@ class Cache:
             out.append(d)
         return out
 
+    def update_announcement_body(self, ann_id: str, body: Optional[str],
+                                  fetch_status: str = "ok") -> None:
+        """Set body + fetch_status for a previously upserted announcement."""
+        self.conn.execute(
+            "UPDATE announcements SET body=?, fetch_status=? WHERE id=?",
+            (body, fetch_status, ann_id),
+        )
+        self.conn.commit()
+
+    def get_announcements_missing_body(self, *, symbol: Optional[str] = None,
+                                        since_days: int = 30,
+                                        limit: int = 200) -> list[dict]:
+        """Return announcements whose body is NULL AND fetch_status is NULL
+        (never tried). Excludes ones we've already tried and marked failed."""
+        since_iso = (datetime.now() - timedelta(days=since_days)).isoformat()
+        where = ["body IS NULL", "fetch_status IS NULL", "posted_at >= ?",
+                 "url IS NOT NULL"]
+        params: list = [since_iso]
+        if symbol:
+            where.append("symbol = ?")
+            params.append(symbol.upper())
+        params.append(limit)
+        sql = (
+            "SELECT id, symbol, posted_at, title, url FROM announcements "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY posted_at DESC LIMIT ?"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
     # ---- fundamentals ----
     def upsert_fundamentals(self, *, symbol: str, eps, pe, pb, div_yield,
                             payout, roe) -> None:
@@ -450,6 +480,34 @@ class Cache:
             (id, source, _iso(posted_at), title, url, ",".join(s.upper() for s in symbols)),
         )
         self.conn.commit()
+
+    def update_news_body(self, news_id: str, body: Optional[str],
+                         fetch_status: str = "ok") -> None:
+        self.conn.execute(
+            "UPDATE news SET body=?, fetch_status=? WHERE id=?",
+            (body, fetch_status, news_id),
+        )
+        self.conn.commit()
+
+    def get_news_missing_body(self, *, symbol: Optional[str] = None,
+                              since_days: int = 30,
+                              limit: int = 200) -> list[dict]:
+        """Same shape as get_announcements_missing_body but for the news table."""
+        since_iso = (datetime.now() - timedelta(days=since_days)).isoformat()
+        where = ["body IS NULL", "fetch_status IS NULL", "posted_at >= ?",
+                 "url IS NOT NULL"]
+        params: list = [since_iso]
+        if symbol:
+            where.append("(',' || UPPER(symbols) || ',') LIKE ?")
+            params.append(f"%,{symbol.upper()},%")
+        params.append(limit)
+        sql = (
+            "SELECT id, source, posted_at, title, url, symbols FROM news "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY posted_at DESC LIMIT ?"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
 
     # ---- indices ----
     def upsert_index(self, code: str, value: float, change: Optional[float],

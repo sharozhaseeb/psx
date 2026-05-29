@@ -279,3 +279,55 @@ def test_cache_status_reports_table_counts_and_freshness(tmp_path):
     assert status["quotes"]["count"] == 1
     assert status["bars_daily"]["count"] == 1
     assert "latest_refreshed_at" in status["symbols"]
+
+
+def test_update_announcement_body_round_trip(tmp_path):
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Announcement
+    from datetime import datetime
+    cache = Cache(str(tmp_path / "c.db"))
+    cache.upsert_announcement(Announcement(
+        id="A1", symbol="SYS", posted_at=datetime.now(),
+        title="Board Meeting", category=None,
+        url="https://dps.psx.com.pk/download/document/1.pdf", body=None,
+    ))
+    cache.update_announcement_body("A1", "The board will meet on 30 May 2026.",
+                                    fetch_status="ok")
+    row = cache.conn.execute(
+        "SELECT body, fetch_status FROM announcements WHERE id='A1'"
+    ).fetchone()
+    assert "The board will meet" in row["body"]
+    assert row["fetch_status"] == "ok"
+
+
+def test_get_announcements_missing_body_filters_by_symbol_and_days(tmp_path):
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Announcement
+    from datetime import datetime, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    now = datetime.now()
+    cache.upsert_announcement(Announcement(
+        id="A1", symbol="SYS", posted_at=now,
+        title="Recent", category=None,
+        url="https://dps.psx.com.pk/download/document/1.pdf", body=None,
+    ))
+    cache.upsert_announcement(Announcement(
+        id="A2", symbol="SYS", posted_at=now - timedelta(days=90),
+        title="Old", category=None,
+        url="https://dps.psx.com.pk/download/document/2.pdf", body=None,
+    ))
+    cache.upsert_announcement(Announcement(
+        id="A3", symbol="OGDC", posted_at=now,
+        title="Other symbol", category=None,
+        url="https://dps.psx.com.pk/download/document/3.pdf", body=None,
+    ))
+    cache.update_announcement_body("A1", "already done", fetch_status="ok")
+
+    rows = cache.get_announcements_missing_body(symbol="SYS", since_days=30)
+    ids = [r["id"] for r in rows]
+    assert ids == []
+
+    rows2 = cache.get_announcements_missing_body(symbol="SYS", since_days=120)
+    ids2 = [r["id"] for r in rows2]
+    assert "A2" in ids2
+    assert "A1" not in ids2
