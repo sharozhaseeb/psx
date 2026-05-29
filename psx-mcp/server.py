@@ -59,6 +59,7 @@ from psx_mcp.risk_extended import (
 from psx_mcp.models import (
     ReturnStatsResponse, DistributionStatsResponse,
     DrawdownDetailsResponse, UpDownCaptureResponse,
+    ExtendedRiskMetricsResponse,
 )
 from psx_mcp.cross_section import (
     z_score, percentile_rank, sector_dispersion, sector_relative_strength,
@@ -1509,6 +1510,132 @@ async def get_full_analysis(symbol: str) -> FullAnalysisResponse:
     drawdown, risk metrics, beta, relative strength, 4-quadrant score, recent
     dividends, recent announcements. Missing sections → null + warning."""
     return _get_full_analysis_impl(_cache, symbol)
+
+
+def _get_extended_risk_metrics_impl(cache: Cache, symbol: str) -> ExtendedRiskMetricsResponse:
+    """Part-4 unified risk dashboard. Composes return/risk-adjusted/distribution/
+    drawdown/capture/technical sections. Each sub-call wrapped in try/except so
+    missing data appends a warning rather than crashing the whole dashboard."""
+    sym = symbol.upper()
+    warnings: list[str] = []
+
+    # 1. Return stats
+    return_stats = None
+    try:
+        rs = _compute_return_stats_impl(cache, sym)
+        return_stats = rs.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"return_stats: {e!r}")
+
+    # 2. Risk-adjusted: Sortino, Calmar, Omega, Information Ratio (date-aligned)
+    risk_adjusted = None
+    try:
+        closes = pd.Series(cache.closes_for(sym))
+        if len(closes) < 3:
+            warnings.append(f"risk_adjusted: need >= 3 bars; have {len(closes)}.")
+        else:
+            sortino_val = sortino(closes)
+            calmar_val = calmar(closes)
+            omega_val = omega_ratio(closes, threshold=0.0)
+            # Information Ratio — REQUIRES date-aligned series (per M4 fix)
+            stock_pairs = cache.closes_for_with_dates(sym)
+            stock_by_date = dict(stock_pairs)
+            idx_rows = cache.get_index_history("KSE100")
+            idx_by_date = {r["bar_date"]: r["close"] for r in idx_rows}
+            common = sorted(set(stock_by_date) & set(idx_by_date))
+            ir = None
+            if len(common) >= 2:
+                s_aligned = pd.Series([stock_by_date[d] for d in common])
+                i_aligned = pd.Series([idx_by_date[d] for d in common])
+                ir = information_ratio(s_aligned, i_aligned)
+            else:
+                warnings.append(
+                    f"risk_adjusted.information_ratio: only {len(common)} "
+                    f"date-aligned bars vs KSE100."
+                )
+            risk_adjusted = {
+                "sortino": sortino_val,
+                "calmar": calmar_val,
+                "omega_ratio_threshold_0": omega_val,
+                "information_ratio_vs_kse100": ir,
+                "n_bars": int(len(closes)),
+                "n_aligned_bars_kse100": len(common),
+            }
+    except Exception as e:
+        warnings.append(f"risk_adjusted: {e!r}")
+
+    # 3. Distribution
+    distribution = None
+    try:
+        ds = _compute_distribution_stats_impl(cache, sym)
+        distribution = ds.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"distribution: {e!r}")
+
+    # 4. Drawdown details
+    drawdown = None
+    try:
+        dd = _compute_drawdown_details_impl(cache, sym)
+        drawdown = dd.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"drawdown: {e!r}")
+
+    # 5. Up/Down capture
+    capture = None
+    try:
+        cap = _compute_up_down_capture_impl(cache, sym)
+        capture = cap.model_dump(exclude={"disclaimer"})
+    except Exception as e:
+        warnings.append(f"capture: {e!r}")
+
+    # 6. Technical bundle (extended indicators)
+    technical = None
+    try:
+        ind = _compute_indicators_impl(
+            cache, sym,
+            indicators=["adx14", "stochastic", "obv", "williams_r14",
+                        "rsi14", "atr14"],
+            lookback_days=260,
+        )
+        technical = {k: v for k, v in ind.items() if k != "disclaimer"}
+    except Exception as e:
+        warnings.append(f"technical: {e!r}")
+
+    note = None
+    if all(s is None for s in (return_stats, risk_adjusted, distribution,
+                                drawdown, capture, technical)):
+        note = (f"No data could be computed for {sym}. "
+                f"Call refresh_history({sym!r}) and refresh_market first.")
+
+    return ExtendedRiskMetricsResponse(
+        symbol=sym,
+        return_stats=return_stats,
+        risk_adjusted=risk_adjusted,
+        distribution=distribution,
+        drawdown=drawdown,
+        capture=capture,
+        technical=technical,
+        warnings=warnings,
+        note=note,
+    )
+
+
+@mcp.tool()
+async def get_extended_risk_metrics(symbol: str) -> ExtendedRiskMetricsResponse:
+    """One-shot extended risk & technical dashboard (Part-4).
+
+    Sections:
+      - return_stats: CAGR, win rate, rolling N-day best/worst/median
+      - risk_adjusted: Sortino, Calmar, Omega, Information Ratio (vs KSE100,
+        date-aligned)
+      - distribution: skewness, excess kurtosis, 5% VaR/CVaR, tail ratio
+      - drawdown: max DD, time-to-trough/recovery, Ulcer Index, top events
+      - capture: up/down capture vs KSE100
+      - technical: ADX14, Stochastic, OBV, Williams %R, RSI14, ATR14
+
+    Each section is best-effort — missing data → null + warning, no crash.
+    Call refresh_history(symbol) and refresh_market first for full coverage."""
+    return _get_extended_risk_metrics_impl(_cache, symbol)
 
 
 # ---- dividends ----

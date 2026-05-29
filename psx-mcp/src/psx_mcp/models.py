@@ -449,6 +449,18 @@ class FullAnalysisResponse(Disclaimer):
     warnings: list[str] = []
 
 
+class ExtendedRiskMetricsResponse(Disclaimer):
+    symbol: str
+    return_stats: Optional[dict] = None
+    risk_adjusted: Optional[dict] = None
+    distribution: Optional[dict] = None
+    drawdown: Optional[dict] = None
+    capture: Optional[dict] = None
+    technical: Optional[dict] = None
+    warnings: list[str] = []
+    note: Optional[str] = None
+
+
 class CacheStatusResponse(Disclaimer):
     tables: dict[str, dict]
     note: Optional[str] = None
