@@ -50,3 +50,130 @@ def win_rate(closes: pd.Series) -> Optional[float]:
     if len(rets) == 0:
         return None
     return float((rets > 0).sum() / len(rets) * 100.0)
+
+
+def sortino(closes: pd.Series, rf_annual: float = 0.0) -> Optional[float]:
+    """Annualized Sortino ratio.
+
+    FORMULA CONVENTION NOTE (M1):
+    This implementation uses the "downside-distribution stdev" variant:
+        sortino = (mean_excess_return * periods_per_year) /
+                  (std(downside_returns) * sqrt(periods_per_year))
+
+    where `downside_returns` are the subset of excess returns strictly below
+    zero (vs. the per-period risk-free rate). The stdev is taken of THAT
+    subset's distribution, not the canonical Sortino (1991) "target
+    semi-deviation" which divides sum-of-squared-shortfalls by the full
+    sample size N (including non-downside periods).
+
+    Consequence: this number is NOT directly comparable to industry-reported
+    Sortino figures (e.g., Morningstar, PortfolioVisualizer) that use the
+    target semi-deviation convention. It will generally read HIGHER than
+    those because we divide by a smaller-denominator stdev.
+
+    Returns None if:
+      - < 2 closes
+      - no returns
+      - no downside returns (stdev would be undefined)
+      - downside stdev is zero
+    """
+    if closes is None or len(closes) < 2:
+        return None
+    rets = closes.pct_change().dropna()
+    if len(rets) == 0:
+        return None
+    rf_per_period = rf_annual / TRADING_DAYS
+    excess = rets - rf_per_period
+    downside = excess[excess < 0]
+    if len(downside) == 0:
+        return None
+    dd_std = float(downside.std(ddof=1)) if len(downside) > 1 else 0.0
+    if dd_std == 0.0 or not math.isfinite(dd_std):
+        return None
+    mean_excess = float(excess.mean())
+    annualized_excess = mean_excess * TRADING_DAYS
+    annualized_dd = dd_std * math.sqrt(TRADING_DAYS)
+    return float(annualized_excess / annualized_dd)
+
+
+def calmar(closes: pd.Series) -> Optional[float]:
+    """Calmar ratio = CAGR / |Max Drawdown|.
+
+    Returns None if:
+      - CAGR cannot be computed
+      - No drawdown (max DD is 0 or undefined)
+    """
+    if closes is None or len(closes) < 2:
+        return None
+    c = cagr(closes)
+    if c is None:
+        return None
+    running_max = closes.cummax()
+    drawdowns = (closes / running_max) - 1.0  # ≤ 0
+    max_dd = float(drawdowns.min())  # most negative
+    if not math.isfinite(max_dd) or max_dd >= 0.0:
+        return None
+    return float(c / abs(max_dd))
+
+
+def information_ratio(
+    stock_closes: pd.Series, benchmark_closes: pd.Series
+) -> Optional[float]:
+    """Annualized Information Ratio = (mean active return) / (tracking error).
+
+    Active return = stock return - benchmark return, per period.
+    Tracking error = stdev of active returns.
+    Both are tail-aligned: if series differ in length, the LAST
+    min(len(stock), len(bench)) closes of each are used.
+
+    Returns None if:
+      - either series has < 2 closes after alignment
+      - tracking error is zero or non-finite
+    """
+    if stock_closes is None or benchmark_closes is None:
+        return None
+    n = min(len(stock_closes), len(benchmark_closes))
+    if n < 2:
+        return None
+    s = stock_closes.iloc[-n:].reset_index(drop=True)
+    b = benchmark_closes.iloc[-n:].reset_index(drop=True)
+    s_rets = s.pct_change().dropna()
+    b_rets = b.pct_change().dropna()
+    # Both should yield n-1 returns after tail-alignment
+    m = min(len(s_rets), len(b_rets))
+    if m < 2:
+        return None
+    s_rets = s_rets.iloc[-m:].reset_index(drop=True)
+    b_rets = b_rets.iloc[-m:].reset_index(drop=True)
+    active = s_rets - b_rets
+    te = float(active.std(ddof=1))
+    if te == 0.0 or not math.isfinite(te):
+        return None
+    mean_active = float(active.mean())
+    annualized_active = mean_active * TRADING_DAYS
+    annualized_te = te * math.sqrt(TRADING_DAYS)
+    return float(annualized_active / annualized_te)
+
+
+def omega_ratio(closes: pd.Series, threshold: float = 0.0) -> Optional[float]:
+    """Omega ratio = sum(gains above threshold) / sum(losses below threshold).
+
+    `threshold` is a per-period return threshold (decimal). Default 0
+    means: gains/losses partitioned at zero return.
+
+    Returns None if:
+      - < 2 closes
+      - no returns
+      - denominator (losses) is zero (would be infinite)
+    """
+    if closes is None or len(closes) < 2:
+        return None
+    rets = closes.pct_change().dropna()
+    if len(rets) == 0:
+        return None
+    excess = rets - threshold
+    gains = float(excess[excess > 0].sum())
+    losses = float(-excess[excess < 0].sum())  # positive magnitude
+    if losses == 0.0 or not math.isfinite(losses):
+        return None
+    return float(gains / losses)
