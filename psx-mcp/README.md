@@ -87,6 +87,16 @@ Live smoke test (gated, hits real PSX):
 | `get_sector_dispersion(sector, metric="pe")` | sector-wide dispersion (std / IQR) and outliers for `metric` |
 | `rank_sector_relative_strength(sectors=None, window_days=60)` | sector RS vs KSE-100 over `window_days`, ranked across major PSX sectors |
 | **`get_extended_risk_metrics(symbol)` — recommended one-shot dashboard** | composes return stats + distribution stats + drawdown deep-dive + up/down capture + cross-sectional rank into a single response. Preferred entry point for Part-4 analytics. |
+| **analytics-v5 — qualitative real-world signals** | |
+| `fetch_announcement_body(announcement_id)` | fetch + cache the PDF body of a PSX announcement on demand; sets `fetch_status` to one of `ok`/`http_error`/`scan_only`/`parse_error`/`no_url`/`not_found`/`no_client` |
+| `bulk_fetch_announcement_bodies(symbol, since_days=30, limit=50)` | batch lazy-fetch announcement bodies for one symbol with throttling + per-status counters |
+| `fetch_news_body(news_id)` | fetch + cache one news article body using per-host selectors (Dawn / Profit / Tribune / Brecorder) |
+| `bulk_fetch_news_bodies(symbol, since_days=14, limit=50)` | batch lazy-fetch news bodies tagged with `symbol` |
+| `get_insider_trades(symbol, since_days=365)` | director / insider transactions extracted from cached announcement bodies (buy/sell + qty + role + holding pct) |
+| `get_earnings_calendar(symbol, lookback_days=30, forward_days=60)` | board meetings convened to consider financial results in window |
+| `get_corporate_actions_calendar(symbol, lookback_days=30, forward_days=60)` | combined view: dividend events + board meetings for the symbol in window |
+| `refresh_company_qualitative(symbol)` | first-time-setup convenience — chains refresh_announcements + refresh_news + bulk announcement-body + bulk news-body fetches for one symbol |
+| **`get_company_research_pack(symbol, lookback_days=30)` — flagship LLM-companion tool** | structured + pre-concatenated markdown briefing of quote, fundamentals, quadrant score, announcement bodies, news bodies, insider trades, upcoming meetings/dividends; the `llm_briefing_text` field is what to hand Claude when asking "what's going on with X?" |
 
 ## Usage tips
 

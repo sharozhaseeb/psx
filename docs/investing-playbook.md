@@ -14,7 +14,7 @@ These are gaps observed while doing real research with the current 24 tools. Eac
 |---|---|---|
 | **52-week high/low** ✅ *Resolved in analytics-v1* | Standard reference for "where am I in the range" | `week52_high` / `week52_low` now computed from cached daily history |
 | **KSE-100 / KSE-30 / All-Share index values** ✅ *Resolved in analytics-v1* | Sector and stock returns are meaningless without a benchmark | `get_market_summary` now populated from cached `indices` table (refreshed alongside market-watch) |
-| **News bodies / announcement text** ⚠ *Partial (analytics-v1)* | Got 40 news IDs cached, but `get_news` returned `[]` — only titles or nothing | Announcement `url` (PSX detail page) is now propagated; full body extraction still deferred |
+| **News bodies / announcement text** ✅ *Resolved (analytics-v5)* | Got 40 news IDs cached, but `get_news` returned `[]` — only titles or nothing | Announcement PDF bodies + news article bodies fetched on demand via fetch_announcement_body / fetch_news_body; per-host selectors for Dawn/Profit/Tribune/Brecorder |
 | **Sector aggregates** ✅ *Resolved in analytics-v1* (`get_sector_summary`) | "Show me sector P/E, sector avg RSI, leaders/laggards within sector" | New tool returns member count, breadth, median PE, top/bottom 5 by change_pct |
 | **Dividend history** ✅ *Resolved in analytics-v2* | Yield, payout, growth — core to any income/quality strategy | `get_dividend_history(symbol)` returns cached ex-dates (populated by `refresh_dividends` via `/company/payouts`) |
 | **Quality metrics (ROE / ROIC / debt ratios)** ⚠ *Partial (analytics-v2)* | ROE, ROA, ROIC, debt/equity, current ratio — fundamental quality filters | `screen_symbols` accepts `roe_min` / `pb_max` / `div_yield_min` — but the underlying columns are still null until Part 3 lands the headless-browser sub-tab fetch (Phase 0 confirmed Ratios sub-tab is SPA-rendered) |
@@ -47,9 +47,9 @@ These are gaps observed while doing real research with the current 24 tools. Eac
 | **Risk-adjusted screener filters** ✅ *Resolved in analytics-v4* | Screen on Sortino / Calmar / max-DD alongside fundamentals | `screen_symbols` gains `sortino_min`, `calmar_min`, `max_dd_max_pct` |
 | **Unified extended dashboard** ✅ *Resolved in analytics-v4* | One-call view of return + distribution + DD + capture + cross-sectional rank | `get_extended_risk_metrics(symbol)` — **recommended Part-4 entry point** |
 | **Free float % / shares outstanding history** | Detect dilution, bonus issues | `free_float` partially populated, no history |
-| **Corporate actions calendar** | Bonus shares, splits, rights, dividend ex-dates | No tool; SYS FY24 EPS looks "crashed" without action history |
-| **Insider / director transactions** | Strongest short-term signal in EM markets | No tool |
-| **Earnings calendar** | When does NETSOL report? Catalyst dates | No tool |
+| **Corporate actions calendar** | Bonus shares, splits, rights, dividend ex-dates | ✅ analytics-v5 — get_corporate_actions_calendar(symbol) |
+| **Insider / director transactions** | Strongest short-term signal in EM markets | ✅ analytics-v5 — get_insider_trades(symbol), parsed from announcement bodies |
+| **Earnings calendar** | When does NETSOL report? Catalyst dates | ✅ analytics-v5 — get_earnings_calendar(symbol), heuristic via board-meeting agenda |
 | **Macro feed** | USD/PKR, SBP policy rate, CPI, oil — drive 50%+ of PSX returns | No tool |
 | **Analyst consensus / target prices** | Had to web-search to find SYS sell-side PT Rs 213 | No tool |
 
@@ -385,6 +385,12 @@ Three RSS feeds (BR, Dawn, Tribune) + a per-symbol headline filter. Avoid sentim
 **analytics-v3** completes the analytical-tool surface (risk, ranking, sizing, dashboard, backtest). **Part 4** will populate ROE/PB/payout via a headless-browser sub-tab fetcher, unlock the full 9-signal Piotroski F-Score, and add macro context (USD/PKR, policy rate).
 
 **analytics-v4** completes the metric-coverage layer (return characterization, risk-adjusted ratios beyond Sharpe, tail/distribution stats, drawdown deep-dive, cross-sectional/sector analytics, four more indicators). **Part 5** focus: headless-browser sub-tab fetcher to populate ROE/PB/payout (unblocks full F-Score), `sector_history` table to track sector P/E percentile vs own history over time, and Treynor ratio (depends on rolling beta from accumulated index history).
+
+### analytics-v5 (shipped 2026-05-29)
+
+analytics-v5 adds the qualitative real-world signal layer: announcement PDF bodies, news article bodies, structured insider trades, structured board-meeting / earnings calendar, the `refresh_company_qualitative(symbol)` first-time-setup chain, and the `get_company_research_pack(symbol)` flagship LLM-companion tool.
+
+**Future** (deferred from Part 5): headless-browser sub-tab fetcher for ROE/PB/payout (was the original Part-5 candidate, deprioritized in favor of qualitative). OCR for scan-only PDFs. Annual report parsing. SBP macro feed. Social media sentiment.
 
 ---
 
