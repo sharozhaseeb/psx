@@ -687,6 +687,61 @@ def test_compute_distribution_stats_seeded(tmp_path):
     assert out.tail_ratio_5pct is not None
 
 
+def test_compute_drawdown_details_seven_bar_series(tmp_path):
+    """7-bar series [100,120,80,100,110,120,130]:
+    peak at idx 1 (120), trough at idx 2 (80, -33.33%), recovery at idx 5 (120).
+    DD duration = 1 bar (2-1), recovery duration = 3 bars (5-2)."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date, timedelta
+    cache = Cache(str(tmp_path / "c.db"))
+    today = date(2026, 5, 29)
+    prices = [100.0, 120.0, 80.0, 100.0, 110.0, 120.0, 130.0]
+    bars = [Bar(symbol="XYZ", date=today - timedelta(days=len(prices) - 1 - i),
+                open=c, high=c, low=c, close=c, volume=1000)
+            for i, c in enumerate(prices)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_drawdown_details_impl(cache, "XYZ")
+    assert out.n_bars == 7
+    assert out.max_drawdown_pct == pytest.approx(-33.333333, abs=1e-4)
+    assert out.peak_index == 1
+    assert out.trough_index == 2
+    assert out.recovery_index == 5
+    assert out.drawdown_duration_bars == 1
+    assert out.recovery_duration_bars == 3
+    assert out.ulcer_index is not None and out.ulcer_index > 0
+    assert len(out.top_drawdowns) >= 1
+    assert out.top_drawdowns[0]["peak_index"] == 1
+    assert out.top_drawdowns[0]["trough_index"] == 2
+    assert out.top_drawdowns[0]["recovery_index"] == 5
+    assert out.note is None
+
+
+def test_compute_drawdown_details_insufficient_bars(tmp_path):
+    """< 2 bars → note set, default zeros returned."""
+    import server as srv
+    from psx_mcp.cache import Cache
+    from psx_mcp.models import Bar
+    from psx_mcp.watchlist import WatchlistStore
+    from datetime import date
+    cache = Cache(str(tmp_path / "c.db"))
+    bars = [Bar(symbol="XYZ", date=date(2026, 5, 29),
+                open=100, high=100, low=100, close=100, volume=1)]
+    cache.upsert_bars(bars)
+    srv.set_dependencies(cache=cache, store=WatchlistStore(str(tmp_path / "w.json")),
+                         client=None)
+    out = srv._compute_drawdown_details_impl(cache, "XYZ")
+    assert out.n_bars == 1
+    assert out.max_drawdown_pct == 0.0
+    assert out.note is not None and "Need" in out.note
+    assert out.peak_index is None
+    assert out.trough_index is None
+
+
 def test_compute_relative_strength_uses_index_history(tmp_path):
     import server as srv
     from psx_mcp.cache import Cache

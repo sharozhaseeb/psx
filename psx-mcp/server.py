@@ -55,6 +55,7 @@ from psx_mcp.risk_extended import (
 )
 from psx_mcp.models import (
     ReturnStatsResponse, DistributionStatsResponse,
+    DrawdownDetailsResponse,
 )
 from psx_mcp.quality import (
     compute_quality_score as _compute_quality_score_pure,
@@ -930,6 +931,31 @@ def _compute_distribution_stats_impl(cache: Cache, symbol: str) -> DistributionS
     )
 
 
+def _compute_drawdown_details_impl(cache: Cache, symbol: str) -> DrawdownDetailsResponse:
+    closes = pd.Series(cache.closes_for(symbol))
+    if len(closes) < 2:
+        return DrawdownDetailsResponse(
+            symbol=symbol.upper(), max_drawdown_pct=0.0,
+            n_bars=int(len(closes)),
+            note=f"Need >= 2 bars; have {len(closes)}.",
+        )
+    dd = drawdown_details(closes)
+    ulc = ulcer_index(closes)
+    return DrawdownDetailsResponse(
+        symbol=symbol.upper(),
+        max_drawdown_pct=dd["max_drawdown_pct"],
+        peak_index=dd["peak_index"],
+        trough_index=dd["trough_index"],
+        recovery_index=dd["recovery_index"],
+        drawdown_duration_bars=dd["drawdown_duration_bars"],
+        recovery_duration_bars=dd["recovery_duration_bars"],
+        ulcer_index=ulc,
+        top_drawdowns=dd["top_drawdowns"],
+        n_bars=int(len(closes)),
+        note=None,
+    )
+
+
 def _compute_relative_strength_impl(cache: Cache, symbol: str,
                                      index_code: str = "KSE100",
                                      window: int = 252) -> RelativeStrengthResponse:
@@ -1008,6 +1034,14 @@ async def compute_distribution_stats(symbol: str) -> DistributionStatsResponse:
     mean of those tail days (always <= VaR). tail_ratio_5pct > 1 = right
     tail dominates (favorable)."""
     return _compute_distribution_stats_impl(_cache, symbol)
+
+
+@mcp.tool()
+async def compute_drawdown_details(symbol: str) -> DrawdownDetailsResponse:
+    """Drawdown deep-dive: max DD, time-to-trough, time-to-recovery,
+    Ulcer Index, top-3 distinct drawdown events. Critical for understanding
+    holding-period pain."""
+    return _compute_drawdown_details_impl(_cache, symbol)
 
 
 @mcp.tool()

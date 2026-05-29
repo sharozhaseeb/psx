@@ -377,6 +377,20 @@ class DistributionStatsResponse(Disclaimer):
     note: Optional[str] = None
 
 
+class DrawdownDetailsResponse(Disclaimer):
+    symbol: str
+    max_drawdown_pct: float
+    peak_index: Optional[int] = None
+    trough_index: Optional[int] = None
+    recovery_index: Optional[int] = None
+    drawdown_duration_bars: Optional[int] = None
+    recovery_duration_bars: Optional[int] = None
+    ulcer_index: Optional[float] = None
+    top_drawdowns: list[dict] = []
+    n_bars: int
+    note: Optional[str] = None
+
+
 class RelativeStrengthResponse(Disclaimer):
     symbol: str
     index_code: str
