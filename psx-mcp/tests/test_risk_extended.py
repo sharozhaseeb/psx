@@ -10,6 +10,11 @@ from psx_mcp.risk_extended import (
     calmar,
     information_ratio,
     omega_ratio,
+    var_historical,
+    cvar_historical,
+    skewness,
+    kurtosis_excess,
+    tail_ratio,
 )
 
 
@@ -148,3 +153,59 @@ def test_omega_threshold_very_high_below_one():
     result = omega_ratio(closes, threshold=0.05)
     assert result is not None
     assert result < 1.0
+
+
+def test_var_historical_5pct_is_negative():
+    """5% historical VaR on a normal-ish return distribution is negative."""
+    rng = np.random.default_rng(17)
+    rets = rng.normal(loc=0.0, scale=0.01, size=500)
+    closes = pd.Series(100.0 * np.cumprod(1.0 + rets))
+    result = var_historical(closes, confidence=0.05)
+    assert result is not None
+    assert result < 0.0
+
+
+def test_cvar_worse_than_var():
+    """CVaR (expected shortfall) should be more negative than VaR."""
+    rng = np.random.default_rng(19)
+    rets = rng.normal(loc=0.0, scale=0.012, size=500)
+    closes = pd.Series(100.0 * np.cumprod(1.0 + rets))
+    v = var_historical(closes, confidence=0.05)
+    c = cvar_historical(closes, confidence=0.05)
+    assert v is not None and c is not None
+    assert c <= v
+
+
+def test_skewness_near_zero_on_normal():
+    """Symmetric normal returns → skewness near zero."""
+    rng = np.random.default_rng(23)
+    rets = rng.normal(loc=0.0, scale=0.01, size=2000)
+    closes = pd.Series(100.0 * np.cumprod(1.0 + rets))
+    result = skewness(closes)
+    assert result is not None
+    assert abs(result) < 0.3
+
+
+def test_kurtosis_excess_near_zero_on_normal():
+    """Normal returns → excess kurtosis near zero."""
+    rng = np.random.default_rng(31)
+    rets = rng.normal(loc=0.0, scale=0.01, size=2000)
+    closes = pd.Series(100.0 * np.cumprod(1.0 + rets))
+    result = kurtosis_excess(closes)
+    assert result is not None
+    assert abs(result) < 0.5
+
+
+def test_tail_ratio_uptrend_greater_than_one():
+    """Uptrend with positive drift → best tail magnitude > worst tail magnitude → ratio > 1."""
+    rng = np.random.default_rng(37)
+    rets = rng.normal(loc=0.002, scale=0.01, size=500)
+    closes = pd.Series(100.0 * np.cumprod(1.0 + rets))
+    result = tail_ratio(closes, quantile=0.05)
+    assert result is not None
+    assert result > 1.0
+
+
+def test_tail_ratio_short_series_returns_none():
+    closes = pd.Series([100.0, 101.0])
+    assert tail_ratio(closes, quantile=0.05) is None

@@ -177,3 +177,124 @@ def omega_ratio(closes: pd.Series, threshold: float = 0.0) -> Optional[float]:
     if losses == 0.0 or not math.isfinite(losses):
         return None
     return float(gains / losses)
+
+
+def var_historical(closes: pd.Series, confidence: float = 0.05) -> Optional[float]:
+    """Historical Value-at-Risk: the `confidence`-quantile of bar-over-bar returns.
+
+    With `confidence=0.05`, returns the 5th-percentile return (typically
+    negative) — the threshold such that returns below it occur 5% of the time.
+
+    Returns None if:
+      - < 2 closes
+      - no returns
+      - confidence is not in (0, 1)
+    """
+    if closes is None or len(closes) < 2:
+        return None
+    if not (0.0 < confidence < 1.0):
+        return None
+    rets = closes.pct_change().dropna()
+    if len(rets) == 0:
+        return None
+    return float(np.quantile(rets.values, confidence))
+
+
+def cvar_historical(closes: pd.Series, confidence: float = 0.05) -> Optional[float]:
+    """Historical Conditional Value-at-Risk (Expected Shortfall):
+    mean of returns at or below the `confidence`-quantile.
+
+    More negative than `var_historical` for the same confidence level.
+
+    Returns None if:
+      - < 2 closes
+      - no returns
+      - confidence is not in (0, 1)
+      - tail subset is empty
+    """
+    if closes is None or len(closes) < 2:
+        return None
+    if not (0.0 < confidence < 1.0):
+        return None
+    rets = closes.pct_change().dropna()
+    if len(rets) == 0:
+        return None
+    threshold = float(np.quantile(rets.values, confidence))
+    tail = rets[rets <= threshold]
+    if len(tail) == 0:
+        return None
+    return float(tail.mean())
+
+
+def skewness(closes: pd.Series) -> Optional[float]:
+    """Sample skewness of bar-over-bar returns (third standardized moment).
+
+    Uses the population (biased) estimator: E[((X - mu)/sigma)^3].
+    Positive → right-skewed (longer right tail); negative → left-skewed.
+
+    Returns None if:
+      - < 3 closes
+      - stdev is zero or non-finite
+    """
+    if closes is None or len(closes) < 3:
+        return None
+    rets = closes.pct_change().dropna()
+    if len(rets) < 2:
+        return None
+    arr = rets.values.astype(float)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=0))
+    if std == 0.0 or not math.isfinite(std):
+        return None
+    return float(((arr - mean) ** 3).mean() / (std ** 3))
+
+
+def kurtosis_excess(closes: pd.Series) -> Optional[float]:
+    """Excess kurtosis of bar-over-bar returns: fourth standardized moment - 3.
+
+    Uses the population (biased) estimator. Zero for a normal distribution;
+    positive → fatter tails / more peaked than normal (leptokurtic).
+
+    Returns None if:
+      - < 3 closes
+      - stdev is zero or non-finite
+    """
+    if closes is None or len(closes) < 3:
+        return None
+    rets = closes.pct_change().dropna()
+    if len(rets) < 2:
+        return None
+    arr = rets.values.astype(float)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=0))
+    if std == 0.0 or not math.isfinite(std):
+        return None
+    return float(((arr - mean) ** 4).mean() / (std ** 4) - 3.0)
+
+
+def tail_ratio(closes: pd.Series, quantile: float = 0.05) -> Optional[float]:
+    """Tail ratio = |upper-tail quantile| / |lower-tail quantile| of returns.
+
+    With `quantile=0.05`, compares the 95th-percentile return to the
+    5th-percentile return (in magnitude). >1 means right tail dominates
+    (good); <1 means left tail dominates (bad).
+
+    Returns None if:
+      - < 2 closes
+      - quantile not in (0, 0.5)
+      - no returns
+      - lower-tail magnitude is zero or non-finite
+    """
+    if closes is None or len(closes) < 2:
+        return None
+    if not (0.0 < quantile < 0.5):
+        return None
+    rets = closes.pct_change().dropna()
+    if len(rets) < 2:
+        return None
+    upper = float(np.quantile(rets.values, 1.0 - quantile))
+    lower = float(np.quantile(rets.values, quantile))
+    denom = abs(lower)
+    if denom == 0.0 or not math.isfinite(denom):
+        return None
+    return float(abs(upper) / denom)
