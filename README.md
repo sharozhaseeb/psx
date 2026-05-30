@@ -12,9 +12,19 @@ Once registered with Claude Code, you can ask things like:
 - *"Analyze SYS — quote, fundamentals, recent technicals, any open filings."*
 - *"Compare LUCK and DGKC on price, P/E, RSI(14), and 50-day SMA."*
 - *"Add OGDC to my watchlist and alert me if RSI(14) drops below 30."*
-- *"Check my alerts."*
+- *"What's going on with NETSOL?"* → `get_company_research_pack("NETSOL")` returns a markdown briefing combining quote, fundamentals, quadrant score, announcement bodies, news bodies, insider trades, and upcoming meetings.
 
-The server exposes ~24 tools across market data, fundamentals, announcements, news, watchlists, alert rules, and indicator/scan helpers. See [`psx-mcp/README.md`](psx-mcp/README.md) for the full tool list.
+The server exposes **63 tools** across five analytics tiers — see [`psx-mcp/README.md`](psx-mcp/README.md) for the full tool list.
+
+| Tier | Focus | Headline tools |
+|---|---|---|
+| **analytics-v1** | Market data, quotes, watchlists, alerts | `get_quote`, `compute_indicators`, `set_alert_rule`, `check_alerts` |
+| **analytics-v2** | Sector rotation, screening, composite scores | `screen_symbols`, `rank_universe`, `compute_4quadrant_score`, `get_full_analysis` |
+| **analytics-v3** | Fundamentals history, dividends, sector summary | `refresh_fundamentals`, `refresh_dividends`, `get_sector_summary`, `backtest_simple` |
+| **analytics-v4** | Risk/return deep-dive (Sortino, Calmar, capture ratios, sector RS) | `get_extended_risk_metrics`, `compute_distribution_stats`, `compute_drawdown_details`, `rank_sector_relative_strength` |
+| **analytics-v5** | Qualitative real-world signals (PDF/news bodies, insider trades, calendars) | `get_company_research_pack` ⭐, `get_insider_trades`, `get_earnings_calendar`, `refresh_company_qualitative` |
+
+⭐ `get_company_research_pack(symbol)` is the flagship LLM-companion tool — its `llm_briefing_text` field is a pre-concatenated markdown briefing meant to be handed to Claude directly.
 
 ## Quick start
 
@@ -55,13 +65,15 @@ stocks/
 
 ## How it was built
 
-This repo was built spec-first, then plan-first:
+This repo was built spec-first, then plan-first, then iteratively expanded in five tagged analytics releases:
 
 1. **Spec** — `docs/superpowers/specs/2026-05-23-psx-mcp-design.md` — scope, architecture, tool surface, storage, error handling, testing strategy.
-2. **Plan** — `docs/superpowers/plans/2026-05-23-psx-mcp-implementation.md` — 18 TDD tasks, each with failing tests written first and exact code shown.
-3. **Implementation** — executed task-by-task via fresh subagents per task with two-stage review (spec compliance + code quality).
+2. **Plans** — `docs/superpowers/plans/` — one plan per release (`analytics-v1` through `analytics-v5`); each plan is a sequence of TDD tasks with failing tests and exact code shown.
+3. **Implementation** — executed task-by-task via fresh subagents per task with two-stage review (spec compliance + code quality), with parallel critic-pass reviews of each plan before execution starts.
 
-Both documents are versioned in git and remain the authoritative scope reference. If you're considering a change, read the spec first.
+Each release is an annotated git tag (`git tag -l "analytics*"`). The plans remain the authoritative scope reference — if you're considering a change, read the relevant plan first.
+
+**Test suite:** 290 passing, 4 live-network smoke tests gated behind `PSX_LIVE=1`.
 
 ## Disclaimer
 
